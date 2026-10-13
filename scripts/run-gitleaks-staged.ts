@@ -11,7 +11,7 @@
  * final secret-scan gate. Exits zero when the scan is clean and non-zero when
  * Gitleaks reports findings.
  */
-import { execSync, spawnSync } from 'node:child_process';
+import { execFileSync, execSync, spawnSync } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -43,7 +43,7 @@ const copyStagedFileInto = (snapshotRoot: string, file: StagedFile): void => {
   const destination = path.join(snapshotRoot, file.relativePath);
   mkdirSync(path.dirname(destination), { recursive: true });
   try {
-    const content = execSync(`git show :${file.relativePath}`, {
+    const content = execFileSync('git', ['show', `:${file.relativePath}`], {
       cwd: repoRoot,
       encoding: 'buffer',
     });
