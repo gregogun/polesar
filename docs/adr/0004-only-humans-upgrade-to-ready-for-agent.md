@@ -1,0 +1,3 @@
+# Only humans upgrade a ticket to ready-for-agent; the loop only downgrades
+
+`ready-for-agent` (an agent may do this unattended) and `ready-for-human` are assigned by a human when tickets are created. The loop may downgrade a ticket to `ready-for-human`, for example when a budget runs out or a protected path is touched, but it never applies `ready-for-agent`. Attended agents use the human's `gh` token, so GitHub would record such a change as the human. That's why a fail-closed PreToolUse hook blocks agents from adding the label, rather than relying on GitHub's audit trail. The system can decide to involve the human more, but never less.
