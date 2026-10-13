@@ -19,7 +19,7 @@ const readVersion = (): string => {
   return pkg.version;
 };
 
-const parse = () => {
+const parseArgsOrExit = () => {
   try {
     return parseArgs({
       options: {
@@ -36,7 +36,7 @@ const parse = () => {
   }
 };
 
-const { values } = parse();
+const { values } = parseArgsOrExit();
 
 if (values.version) {
   process.stdout.write(`${readVersion()}\n`);
