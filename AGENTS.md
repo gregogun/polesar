@@ -16,13 +16,8 @@ TypeScript CLI, pnpm. Node 24 (`.nvmrc`); TS runs natively in dev, `dist/` is bu
 
 ## Checks
 
-CI runs `pnpm format:check`, `pnpm lint`, `pnpm types:check`, `pnpm knip`, `pnpm build` and `pnpm test`. Run them before calling work done.
-
-Pre-commit (lefthook) runs only the cheap checks: format, lint on staged files, secret scan. Don't bypass it with `--no-verify`.
-
-## Commits
-
-[Conventional Commits](https://www.conventionalcommits.org/), one logical change per commit.
+- Full suite (what CI runs): `.github/workflows/ci.yml`
+- Pre-commit (cheap checks only): `lefthook.yml`
 
 ## Agent skills
 
