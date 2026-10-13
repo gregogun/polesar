@@ -1,0 +1,12 @@
+# Cheap checks only. Typecheck, knip and tests run in CI (the gate).
+pre-commit:
+  parallel: true
+  commands:
+    prettier:
+      run: pnpm exec prettier --ignore-unknown --write {staged_files}
+      stage_fixed: true
+    lint:
+      glob: '**/*.{ts,tsx,js,jsx,mjs}'
+      run: pnpm exec oxlint {staged_files} && pnpm exec eslint --max-warnings=0 --no-warn-ignored {staged_files}
+    secrets:
+      run: node scripts/run-gitleaks-staged.ts
