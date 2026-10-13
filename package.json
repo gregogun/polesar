@@ -1,0 +1,43 @@
+{
+  "name": "polesar",
+  "version": "0.0.0",
+  "description": "A trust-first policy layer for running coding agents",
+  "type": "module",
+  "bin": {
+    "polesar": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "lint": "oxlint && eslint .",
+    "types:check": "tsc --pretty --noEmit",
+    "knip": "knip",
+    "format:check": "prettier --check .",
+    "prepare": "lefthook install && pnpm build"
+  },
+  "packageManager": "pnpm@10.5.2",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "lefthook"
+    ]
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.6.5",
+    "eslint": "^10.12.0",
+    "eslint-plugin-oxlint": "^1.88.0",
+    "knip": "^6.41.0",
+    "lefthook": "^2.2.2",
+    "oxlint": "^1.88.0",
+    "prettier": "^3.9.10",
+    "typescript": "~6.0",
+    "typescript-eslint": "^8.71.2",
+    "vitest": "^5.0.4"
+  },
+  "engines": {
+    "node": ">=22.18"
+  }
+}
