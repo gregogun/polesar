@@ -1,4 +1,5 @@
-# Cheap checks only. Typecheck, knip and tests run in CI (the gate).
+# Cheap checks: crucial for correctness (typecheck), or cheap if not crucial
+# (format, lint on staged files, secret scan). Knip, build and tests run in CI.
 pre-commit:
   parallel: true
   commands:
@@ -10,3 +11,5 @@ pre-commit:
       run: pnpm exec oxlint {staged_files} && pnpm exec eslint --max-warnings=0 --no-warn-ignored {staged_files}
     secrets:
       run: node scripts/run-gitleaks-staged.ts
+    typecheck:
+      run: pnpm types:check
