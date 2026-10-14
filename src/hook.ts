@@ -1,3 +1,4 @@
+import { checkBash, checkMcpTool, type Verdict } from './guard.ts';
 import {
   ConfigError,
   MissingConfigError,
@@ -6,7 +7,7 @@ import {
 } from './verify.ts';
 
 /** What a Claude Code hook command writes and exits with. */
-type HookResponse = { exitCode: number; stdout: string; stderr: string };
+export type HookResponse = { exitCode: number; stdout: string; stderr: string };
 
 type StopPayload = { cwd: string; stopHookActive: boolean };
 
@@ -64,5 +65,65 @@ export const stopHook = async (payload: string): Promise<HookResponse> => {
     if (error instanceof MissingConfigError) return respond();
     if (error instanceof ConfigError) return hookError(error.message);
     throw error;
+  }
+};
+
+/** Exit 2 blocks a PreToolUse tool call; stderr is fed back to the agent. */
+const deny = (reason: string): HookResponse => ({
+  exitCode: 2,
+  stdout: '',
+  stderr: `${reason}\n`,
+});
+
+const failClosed = (problem: string) =>
+  deny(
+    `polesar: blocked because the guard hook could not check this tool call: ${problem}. ` +
+      "Try the call again; if it keeps being blocked, ask the user to check polesar's PreToolUse hook."
+  );
+
+const fromVerdict = (verdict: Verdict): HookResponse =>
+  verdict.blocked ? deny(verdict.reason) : respond();
+
+type ToolCall = { toolName: string; toolInput: unknown };
+
+const parseToolCall = (payload: string): ToolCall | undefined => {
+  try {
+    const { tool_name, tool_input } = JSON.parse(payload) as {
+      tool_name?: unknown;
+      tool_input?: unknown;
+    };
+    if (typeof tool_name !== 'string') return undefined;
+    return { toolName: tool_name, toolInput: tool_input };
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * Claude Code PreToolUse hook guarding the trust boundary in attended
+ * sessions. It fails closed: a payload it can't read, or any error while
+ * checking, blocks the call rather than letting it through.
+ */
+export const preToolUseHook = async (
+  stdin: Promise<string>
+): Promise<HookResponse> => {
+  try {
+    const call = parseToolCall(await stdin);
+    if (call === undefined) {
+      return failClosed(
+        'expected a Claude Code PreToolUse payload on stdin: a JSON object with a "tool_name" string'
+      );
+    }
+    if (call.toolName.startsWith('mcp__')) {
+      return fromVerdict(checkMcpTool(call.toolName, call.toolInput));
+    }
+    if (call.toolName !== 'Bash') return respond();
+    const command = (call.toolInput as { command?: unknown } | null)?.command;
+    if (typeof command !== 'string') {
+      return failClosed('the Bash tool input has no "command" string');
+    }
+    return fromVerdict(checkBash(command));
+  } catch (error) {
+    return failClosed(error instanceof Error ? error.message : String(error));
   }
 };

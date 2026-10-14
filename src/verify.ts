@@ -39,7 +39,7 @@ export class MissingConfigError extends ConfigError {
   override name = 'MissingConfigError';
 }
 
-const exists = (file: string) =>
+export const exists = (file: string) =>
   access(file).then(
     () => true,
     () => false
@@ -68,7 +68,7 @@ const readConfig = async (file: string): Promise<unknown> => {
   }
 };
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
+export const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const loadChecks = async (file: string): Promise<Check[]> => {
