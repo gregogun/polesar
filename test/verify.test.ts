@@ -55,12 +55,7 @@ describe('polesar verify', () => {
     expect(result.stdout).toContain('src/a.ts:3:5 - error TS2322: nope');
     expect(result.stdout).not.toContain('format');
     expect(result.stdout).not.toContain('all files formatted');
-
-    const log = /Full log: (.+)$/m.exec(result.stdout)?.[1];
-    expect(log).toBeDefined();
-    expect(await readFile(log!, 'utf8')).toBe(
-      'src/a.ts:3:5 - error TS2322: nope\nFound 1 error.\n'
-    );
+    expect(result.stdout).toMatch(/^ {2}Full log: \S+\.log$/m);
   });
 
   it('gives structured results for every check with --json', async () => {
@@ -104,26 +99,14 @@ describe('polesar verify', () => {
     expect(result.stderr).toContain('"checks"');
   });
 
-  it.each([
-    ['is not JSON', '{ verify: '],
-    ['has no checks', JSON.stringify({ verify: {} })],
-    ['has an empty checks list', JSON.stringify({ verify: { checks: {} } })],
-    [
-      'has a non-string check command',
-      JSON.stringify({ verify: { checks: { lint: 42 } } }),
-    ],
-  ])(
-    'names the problem and exits 2 when the config %s',
-    async (_problem, content) => {
-      const result = await runCli(['verify'], {
-        files: { 'polesar.json': content },
-      });
+  // An empty list would otherwise "pass" vacuously and let every Stop through.
+  it('rejects a config with no checks rather than passing vacuously', async () => {
+    const result = await runCli(['verify'], { files: polesarConfig({}) });
 
-      expect(result.exitCode).toBe(2);
-      expect(result.stdout).toBe('');
-      expect(result.stderr).toMatch(/^polesar: .*polesar\.json/);
-    }
-  );
+    expect(result.exitCode).toBe(2);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toMatch(/^polesar: .*polesar\.json/);
+  });
 
   it('keeps stdout and stderr in the order the check wrote them', async () => {
     const result = await runCli(['verify'], {

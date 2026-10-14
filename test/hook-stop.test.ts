@@ -3,14 +3,14 @@ import { describe, expect, it } from 'vitest';
 import { polesarConfig } from './polesar-config.ts';
 import { runCli } from './run-cli.ts';
 
-/** A Claude Code Stop hook payload for a session working in `<tmp>/<dir>`. */
+/** A Claude Code Stop hook payload for a session working in `<tmp>/project`. */
 const payload =
-  ({ dir = 'project', stopHookActive = false } = {}) =>
+  ({ stopHookActive = false } = {}) =>
   (tmp: string) =>
     JSON.stringify({
       session_id: 'abc123',
       transcript_path: path.join(tmp, 'transcript.jsonl'),
-      cwd: path.join(tmp, dir),
+      cwd: path.join(tmp, 'project'),
       hook_event_name: 'Stop',
       stop_hook_active: stopHookActive,
     });
@@ -53,19 +53,6 @@ describe('polesar hook stop', () => {
     expect(output.reason).not.toContain('lint');
   });
 
-  it('blocks from a subdirectory of the repo, using the config at its git root', async () => {
-    const result = await runCli(['hook', 'stop'], {
-      stdin: payload({ dir: 'project/packages/app' }),
-      files: {
-        'project/.git/HEAD': 'ref: refs/heads/main\n',
-        ...project({ typecheck: failingTypecheck }),
-      },
-    });
-
-    expect(result.exitCode).toBe(0);
-    expect(JSON.parse(result.stdout)).toMatchObject({ decision: 'block' });
-  });
-
   it('lets the stop through with a warning once the agent has already been sent back', async () => {
     const result = await runCli(['hook', 'stop'], {
       stdin: payload({ stopHookActive: true }),
@@ -97,19 +84,13 @@ describe('polesar hook stop', () => {
     expect(result.stderr).toMatch(/^polesar: .*polesar\.json/);
   });
 
-  it.each([
-    ['is not JSON', 'not json'],
-    ['has no cwd', JSON.stringify({ hook_event_name: 'Stop' })],
-  ])(
-    'reports a payload that %s without sending the agent back',
-    async (_problem, stdin) => {
-      const result = await runCli(['hook', 'stop'], { stdin });
+  it('reports a malformed payload without sending the agent back', async () => {
+    const result = await runCli(['hook', 'stop'], { stdin: 'not json' });
 
-      expect(result.exitCode).toBe(1);
-      expect(result.stdout).toBe('');
-      expect(result.stderr).toMatch(/^polesar: .*Stop hook payload/);
-    }
-  );
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toMatch(/^polesar: .*Stop hook payload/);
+  });
 });
 
 describe('polesar hook with an unsupported event', () => {

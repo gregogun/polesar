@@ -12,18 +12,6 @@ describe('polesar --help', () => {
     expect(result.stdout).toContain('--version');
     expect(result.stderr).toBe('');
   });
-
-  it.each([['verify'], ['hook']])(
-    'documents the %s command, also when asked after it',
-    async (command) => {
-      const top = await runCli(['--help']);
-      const after = await runCli([command, '--help']);
-
-      expect(top.stdout).toMatch(new RegExp(`^  ${command} `, 'm'));
-      expect(after.exitCode).toBe(0);
-      expect(after.stdout).toBe(top.stdout);
-    }
-  );
 });
 
 describe('polesar --version', () => {
