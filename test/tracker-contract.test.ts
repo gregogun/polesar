@@ -129,13 +129,15 @@ describe.skipIf(!repo)('Tracker contract: GitHub', { timeout: 120_000 }, () => {
   };
 
   afterAll(async () => {
-    for (const number of created) {
-      // Deleting needs admin rights; closing keeps the repo's open list short either way.
-      await gh('issue', 'delete', String(number), '--yes').catch(() =>
-        gh('issue', 'close', String(number))
-      );
-    }
-  });
+    await Promise.all(
+      created.map((number) =>
+        // Deleting needs admin rights; closing keeps the repo's open list short either way.
+        gh('issue', 'delete', String(number), '--yes').catch(() =>
+          gh('issue', 'close', String(number))
+        )
+      )
+    );
+  }, 120_000);
 
   contract(async () => {
     for (const label of LABELS) {
