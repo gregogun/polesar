@@ -21,22 +21,26 @@ Commands:
   hook pre-tool-use
                    Claude Code PreToolUse hook guarding the trust boundary.
                    Reads the hook payload on stdin and blocks (exit 2, reason
-                   on stderr) Bash commands that add the ready-for-agent
-                   label, skip pre-commit hooks (git commit --no-verify),
-                   post commit statuses or check runs, or run decide accept.
+                   on stderr) tool calls that add the ready-for-agent label,
+                   skip pre-commit hooks (git commit --no-verify, changing
+                   core.hooksPath), post commit statuses or check runs, or
+                   run decide accept: Bash commands (gh, git, curl to the
+                   GitHub API) and MCP tools.
                    Fails closed: a payload it can't read, or any error, blocks.
   hook stop        Claude Code Stop hook. Reads the hook payload on stdin and
                    runs verify from its cwd. Sends the agent back once with the
                    failure summary while checks fail; if it stops again with
                    checks still failing, the stop goes through with a warning.
                    Allows the stop in repos without polesar.json.
-  install-hooks [--dry-run] [--command <cmd>]
+  install-hooks [--dry-run] [--command <cmd>] [--json]
                    Add the PreToolUse and Stop hooks to .claude/settings.json
-                   at the git root, keeping existing settings. Hooks already
-                   there are left alone, so rerunning changes nothing.
+                   at the git root, keeping existing settings. A polesar hook
+                   installed with another command is replaced, not
+                   duplicated, so rerunning changes nothing.
                    --command sets how hooks run polesar (default: polesar),
                    e.g. 'node "$CLAUDE_PROJECT_DIR/src/cli.ts"'. --dry-run
-                   reports what would be added without writing.
+                   reports what would change without writing. --json gives
+                   each hook's status (added, updated, present).
                    Exit: 0 installed or up to date, 2 bad usage or settings.
 
 Options:
@@ -120,12 +124,17 @@ if (command === 'verify') {
   const { values } = parseCommandArgsOrExit(rest, {
     'dry-run': { type: 'boolean' },
     command: { type: 'string' },
+    json: { type: 'boolean' },
   });
   const options = { polesar: values.command, dryRun: values['dry-run'] };
   const result = await orExitOnConfigError(() =>
     installHooks(process.cwd(), options)
   );
-  process.stdout.write(describeInstall(result, options));
+  process.stdout.write(
+    values.json
+      ? `${JSON.stringify(result, null, 2)}\n`
+      : describeInstall(result, options)
+  );
 } else if (command === 'hook') {
   const { positionals } = parseCommandArgsOrExit(
     rest,

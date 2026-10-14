@@ -31,7 +31,7 @@ const install = (args: string[] = [], cwd?: string) =>
 const POLESAR_HOOKS = {
   PreToolUse: [
     {
-      matcher: 'Bash',
+      matcher: 'Bash|mcp__.*',
       hooks: [
         { type: 'command', command: 'polesar hook pre-tool-use || exit 2' },
       ],
@@ -108,12 +108,80 @@ describe('polesar install-hooks', () => {
     );
   });
 
+  it('replaces polesar hooks installed with another command instead of adding a second copy', async () => {
+    const lint = { type: 'command', command: 'pnpm lint' };
+    await writeSettings({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Bash',
+            hooks: [
+              { type: 'command', command: 'npx polesar hook pre-tool-use' },
+            ],
+          },
+          { matcher: 'Write', hooks: [lint] },
+        ],
+        Stop: [
+          {
+            hooks: [
+              lint,
+              { type: 'command', command: 'node cli.js hook stop' },
+            ],
+          },
+        ],
+      },
+    });
+
+    const result = await install();
+
+    expect(result.exitCode).toBe(0);
+    expect(await readSettings()).toEqual({
+      hooks: {
+        PreToolUse: [
+          { matcher: 'Write', hooks: [lint] },
+          ...POLESAR_HOOKS.PreToolUse,
+        ],
+        Stop: [{ hooks: [lint] }, ...POLESAR_HOOKS.Stop],
+      },
+    });
+    expect(result.stdout).toContain('Updated PreToolUse hook');
+    expect(result.stdout).toContain('Updated Stop hook');
+    expect((await install()).stdout).toContain('is up to date');
+  });
+
+  it('reports what it did as JSON with --json', async () => {
+    await writeSettings({ hooks: { Stop: POLESAR_HOOKS.Stop } });
+
+    const result = await install(['--json']);
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      file: expect.stringMatching(/\.claude\/settings\.json$/),
+      written: true,
+      hooks: [
+        {
+          event: 'PreToolUse',
+          matcher: 'Bash|mcp__.*',
+          command: 'polesar hook pre-tool-use || exit 2',
+          status: 'added',
+        },
+        {
+          event: 'Stop',
+          command: 'polesar hook stop',
+          status: 'present',
+        },
+      ],
+    });
+  });
+
   it('reports what it would add without writing on --dry-run', async () => {
     const result = await install(['--dry-run']);
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain('Would add PreToolUse hook');
     await expect(readFile(settingsFile())).rejects.toThrow();
+    const json = await install(['--dry-run', '--json']);
+    expect(JSON.parse(json.stdout)).toMatchObject({ written: false });
   });
 
   it('leaves invalid settings alone, says why and exits 2', async () => {

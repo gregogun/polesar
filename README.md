@@ -38,16 +38,16 @@ Output lists only the checks that failed, with the tail of their output and a pa
 
 ### Hooks
 
-`polesar install-hooks` adds polesar's Claude Code hooks to `.claude/settings.json` at the repo root, keeping any settings already there. Rerunning it changes nothing. `--dry-run` shows what it would add, and `--command` changes how the hooks run polesar (default: `polesar`, which must be on `PATH`).
+`polesar install-hooks` adds polesar's Claude Code hooks to `.claude/settings.json` at the repo root, keeping any settings already there. A polesar hook installed with a different command is replaced rather than duplicated, so rerunning it changes nothing. `--dry-run` shows what it would change, `--json` reports each hook's status (`added`, `updated` or `present`), and `--command` changes how the hooks run polesar (default: `polesar`, which must be on `PATH`).
 
-**Guard (`polesar hook pre-tool-use`).** Blocks an attended agent's Bash commands that would break the trust boundary, and tells it what to do instead:
+**Guard (`polesar hook pre-tool-use`).** Blocks an attended agent's tool calls that would break the trust boundary, and tells it what to do instead:
 
-- adding the `ready-for-agent` label (`gh issue edit --add-label`, `gh issue create --label`, `gh api` label writes)
-- skipping pre-commit hooks (`git commit --no-verify` / `-n`, or overriding `core.hooksPath`)
-- posting commit statuses or check runs
+- adding the `ready-for-agent` label (`gh issue edit --add-label`, `gh issue create --label`, `gh api` or `curl` label writes, MCP tools with a `labels` input)
+- skipping pre-commit hooks (`git commit --no-verify` / `-n`, `LEFTHOOK=0` / `HUSKY=0`, or changing `core.hooksPath`)
+- posting commit statuses or check runs (`gh api`, `curl`, MCP tools)
 - `polesar decide accept`
 
-It fails closed. A payload it can't read, an error, or polesar missing from `PATH` all block the call. It reads commands the way a shell would, through quoting, chaining, `$(...)`, `sh -c` and wrappers like `sudo`. It is a guard against shortcuts, not a sandbox: a command hidden in a variable or a script file gets past it.
+It checks Bash commands and MCP tool calls. It fails closed. A payload it can't read, an error, or polesar missing from `PATH` all block the call. It reads commands the way a shell would, through quoting, chaining, `$(...)`, `sh -c` and wrappers like `sudo`. It is a guard against shortcuts, not a sandbox: a command hidden in a variable or a script file, another HTTP client, or edits to `.git/` or `.claude/settings.json` get past it.
 
 **Stop (`polesar hook stop`).** Sends the agent back with the failure summary when it tries to stop while `verify` fails. It does this once: if the agent stops again with checks still failing, the stop goes through and you get a warning, so a stuck agent can't loop. Repos without `polesar.json` are left alone.
 
