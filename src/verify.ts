@@ -1,5 +1,5 @@
-import { spawn } from 'node:child_process';
-import { access, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { access, mkdtemp, open, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
@@ -92,36 +92,38 @@ const loadChecks = async (file: string): Promise<Check[]> => {
   });
 };
 
-const runCheck = (
+/** Waits for a check to exit, failing if it couldn't be started. */
+const exitOf = (child: ChildProcess): Promise<number | null> =>
+  new Promise((resolve, reject) => {
+    child.on('error', reject);
+    child.on('close', resolve);
+  });
+
+const runCheck = async (
   check: Check,
   cwd: string,
   log: string
-): Promise<CheckResult> =>
-  new Promise((resolve, reject) => {
-    const child = spawn(check.command, {
-      cwd,
-      shell: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let output = '';
-    const collect = (chunk: string) => {
-      output += chunk;
-    };
-    child.stdout.setEncoding('utf8').on('data', collect);
-    child.stderr.setEncoding('utf8').on('data', collect);
-    child.on('error', reject);
-    child.on('close', (exitCode) => {
-      const excerpt = stripVTControlCharacters(output)
-        .split('\n')
-        .filter((line) => line.trim() !== '')
-        .slice(-EXCERPT_LINES);
-      writeFile(log, output).then(
-        () =>
-          resolve({ ...check, passed: exitCode === 0, exitCode, excerpt, log }),
-        reject
-      );
-    });
-  });
+): Promise<CheckResult> => {
+  // One file for stdout and stderr keeps them in the order the check wrote them.
+  const file = await open(log, 'w');
+  let exitCode: number | null;
+  try {
+    exitCode = await exitOf(
+      spawn(check.command, {
+        cwd,
+        shell: true,
+        stdio: ['ignore', file.fd, file.fd],
+      })
+    );
+  } finally {
+    await file.close();
+  }
+  const excerpt = stripVTControlCharacters(await readFile(log, 'utf8'))
+    .split('\n')
+    .filter((line) => line.trim() !== '')
+    .slice(-EXCERPT_LINES);
+  return { ...check, passed: exitCode === 0, exitCode, excerpt, log };
+};
 
 const logName = (index: number, check: Check) =>
   `${index + 1}-${check.name.replace(/[^\w.-]/g, '_')}.log`;

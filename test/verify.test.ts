@@ -125,6 +125,22 @@ describe('polesar verify', () => {
     }
   );
 
+  it('keeps stdout and stderr in the order the check wrote them', async () => {
+    const result = await runCli(['verify'], {
+      files: polesarConfig({
+        interleaved:
+          'for i in $(seq 1 200); do echo "out $i"; echo "err $i" >&2; done; exit 1',
+      }),
+    });
+
+    const log = /Full log: (.+)$/m.exec(result.stdout)?.[1];
+    const expected = Array.from(
+      { length: 200 },
+      (_, i) => `out ${i + 1}\nerr ${i + 1}\n`
+    ).join('');
+    expect(await readFile(log!, 'utf8')).toBe(expected);
+  });
+
   it('shows only the tail of a long failure, leaving the rest to the full log', async () => {
     const result = await runCli(['verify'], {
       files: polesarConfig({
