@@ -11,6 +11,8 @@ type RunCliOptions = {
   stdin?: string | ((cwd: string) => string);
   /** Files (e.g. config) written into a fresh temp dir used as the child's cwd. */
   files?: Record<string, string>;
+  /** Subdirectory of that temp dir to run in, created if missing. */
+  cwd?: string;
   /** Extra environment variables, on top of a minimal base. */
   env?: Record<string, string>;
 };
@@ -33,13 +35,15 @@ export const runCli = async (
       await mkdir(path.dirname(file), { recursive: true });
       await writeFile(file, content);
     }
+    const childCwd = path.join(cwd, options.cwd ?? '');
+    await mkdir(childCwd, { recursive: true });
     return await new Promise<CliResult>((resolve, reject) => {
       const child = spawn(
         process.execPath,
         // Node <24 warns on type stripping; that's runtime noise, not CLI output.
         ['--disable-warning=ExperimentalWarning', CLI, ...args],
         {
-          cwd,
+          cwd: childCwd,
           env: { PATH: process.env.PATH ?? '', ...options.env },
         }
       );

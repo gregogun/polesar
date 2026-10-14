@@ -12,14 +12,16 @@ A trust-first policy layer for running coding agents.
 
 Commands:
   verify [--json]  Run the repo's cheap checks, listed under "verify.checks"
-                   in polesar.json. Prints only failing checks: where they
-                   failed and a path to the full log. --json gives structured
-                   results for every check.
+                   in the nearest polesar.json up to the git root; checks run
+                   from that file's directory. Prints only failing checks:
+                   where they failed and a path to the full log. --json gives
+                   structured results for every check.
                    Exit: 0 all passed, 1 a check failed, 2 bad usage or config.
   hook stop        Claude Code Stop hook. Reads the hook payload on stdin and
-                   runs verify in its cwd; sends the agent back with the
-                   failure summary while checks fail. Allows the stop in repos
-                   without polesar.json.
+                   runs verify from its cwd. Sends the agent back once with the
+                   failure summary while checks fail; if it stops again with
+                   checks still failing, the stop goes through with a warning.
+                   Allows the stop in repos without polesar.json.
 
 Options:
   -h, --help       Show this help and exit
@@ -39,7 +41,7 @@ const readVersion = (): string => {
 const parseArgsOrExit = <T extends ParseArgsOptionsConfig>(
   args: string[],
   options: T,
-  allowPositionals = false
+  { allowPositionals = false } = {}
 ) => {
   try {
     return parseArgs({ args, options, allowPositionals });
@@ -50,6 +52,24 @@ const parseArgsOrExit = <T extends ParseArgsOptionsConfig>(
     );
     process.exit(2);
   }
+};
+
+/** Parses a command's args; `--help` after any command prints usage. */
+const parseCommandArgsOrExit = <T extends ParseArgsOptionsConfig>(
+  args: string[],
+  options: T,
+  { allowPositionals = false } = {}
+) => {
+  const parsed = parseArgsOrExit(
+    args,
+    { ...options, help },
+    { allowPositionals }
+  );
+  if ((parsed.values as { help?: boolean }).help) {
+    process.stdout.write(HELP);
+    process.exit(0);
+  }
+  return parsed;
 };
 
 const verifyOrExit = async (cwd: string) => {
@@ -65,28 +85,20 @@ const verifyOrExit = async (cwd: string) => {
 const [command, ...rest] = process.argv.slice(2);
 
 if (command === 'verify') {
-  const { values } = parseArgsOrExit(rest, {
-    help,
+  const { values } = parseCommandArgsOrExit(rest, {
     json: { type: 'boolean' },
   });
-  if (values.help) {
-    process.stdout.write(HELP);
-    process.exit(0);
-  }
-  const checks = await verifyOrExit(process.cwd());
-  const passed = checks.every((check) => check.passed);
+  const result = await verifyOrExit(process.cwd());
   process.stdout.write(
-    values.json
-      ? `${JSON.stringify({ passed, checks }, null, 2)}\n`
-      : summarise(checks)
+    values.json ? `${JSON.stringify(result, null, 2)}\n` : summarise(result)
   );
-  process.exitCode = passed ? 0 : 1;
+  process.exitCode = result.passed ? 0 : 1;
 } else if (command === 'hook') {
-  const { values, positionals } = parseArgsOrExit(rest, { help }, true);
-  if (values.help) {
-    process.stdout.write(HELP);
-    process.exit(0);
-  }
+  const { positionals } = parseCommandArgsOrExit(
+    rest,
+    {},
+    { allowPositionals: true }
+  );
   if (positionals.length !== 1 || positionals[0] !== 'stop') {
     process.stderr.write(
       `polesar: unknown hook '${positionals.join(' ')}'. Supported: stop\nRun 'polesar --help' for usage.\n`

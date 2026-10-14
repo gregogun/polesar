@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
@@ -39,15 +39,27 @@ export class MissingConfigError extends ConfigError {
   override name = 'MissingConfigError';
 }
 
-const readConfig = async (file: string): Promise<unknown> => {
-  let text: string;
-  try {
-    text = await readFile(file, 'utf8');
-  } catch {
-    throw new MissingConfigError(
-      `no ${CONFIG_FILE} in ${path.dirname(file)}. Create one listing the cheap checks to run, e.g.:\n${CONFIG_EXAMPLE}`
-    );
+const exists = (file: string) =>
+  access(file).then(
+    () => true,
+    () => false
+  );
+
+/** The nearest polesar.json from `cwd` up to its git root (or the filesystem root outside git). */
+const findConfig = async (cwd: string): Promise<string> => {
+  for (let dir = path.resolve(cwd); ; dir = path.dirname(dir)) {
+    const file = path.join(dir, CONFIG_FILE);
+    if (await exists(file)) return file;
+    if ((await exists(path.join(dir, '.git'))) || path.dirname(dir) === dir) {
+      throw new MissingConfigError(
+        `no ${CONFIG_FILE} in ${cwd} or its parents up to ${dir}. Create one at the repo root listing the cheap checks to run, e.g.:\n${CONFIG_EXAMPLE}`
+      );
+    }
   }
+};
+
+const readConfig = async (file: string): Promise<unknown> => {
+  const text = await readFile(file, 'utf8');
   try {
     return JSON.parse(text);
   } catch (error) {
@@ -59,8 +71,7 @@ const readConfig = async (file: string): Promise<unknown> => {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
-const loadChecks = async (cwd: string): Promise<Check[]> => {
-  const file = path.join(cwd, CONFIG_FILE);
+const loadChecks = async (file: string): Promise<Check[]> => {
   const config = await readConfig(file);
   const checks =
     isRecord(config) && isRecord(config.verify)
@@ -115,29 +126,37 @@ const runCheck = (
 const logName = (index: number, check: Check) =>
   `${index + 1}-${check.name.replace(/[^\w.-]/g, '_')}.log`;
 
-/** Runs the repo's configured cheap checks in `cwd`, in parallel. */
-export const verify = async (cwd: string): Promise<CheckResult[]> => {
-  const checks = await loadChecks(cwd);
-  const logs = await mkdtemp(path.join(tmpdir(), 'polesar-verify-'));
-  return Promise.all(
-    checks.map((check, index) =>
-      runCheck(check, cwd, path.join(logs, logName(index, check)))
+type VerifyResult = { passed: boolean; checks: CheckResult[] };
+
+/** Runs the repo's configured cheap checks, in parallel, from the directory holding its polesar.json. */
+export const verify = async (cwd: string): Promise<VerifyResult> => {
+  const file = await findConfig(cwd);
+  const configured = await loadChecks(file);
+  const logDir = await mkdtemp(path.join(tmpdir(), 'polesar-verify-'));
+  const checks = await Promise.all(
+    configured.map((check, index) =>
+      runCheck(
+        check,
+        path.dirname(file),
+        path.join(logDir, logName(index, check))
+      )
     )
   );
+  return { passed: checks.every((check) => check.passed), checks };
 };
 
 /** Short, agent-facing summary: only what failed, where, and the full log. */
-export const summarise = (results: CheckResult[]): string => {
-  const failed = results.filter((result) => !result.passed);
-  if (failed.length === 0) {
-    return `verify: all ${results.length} checks passed\n`;
+export const summarise = ({ passed, checks }: VerifyResult): string => {
+  if (passed) {
+    return `verify: all ${checks.length} checks passed\n`;
   }
-  const sections = failed.map((result) =>
+  const failed = checks.filter((check) => !check.passed);
+  const sections = failed.map((check) =>
     [
-      `✗ ${result.name} (exit ${result.exitCode}): ${result.command}`,
-      ...result.excerpt.map((line) => `  ${line}`),
-      `  Full log: ${result.log}`,
+      `✗ ${check.name} (exit ${check.exitCode}): ${check.command}`,
+      ...check.excerpt.map((line) => `  ${line}`),
+      `  Full log: ${check.log}`,
     ].join('\n')
   );
-  return `verify: ${failed.length} of ${results.length} checks failed\n\n${sections.join('\n\n')}\n`;
+  return `verify: ${failed.length} of ${checks.length} checks failed\n\n${sections.join('\n\n')}\n`;
 };

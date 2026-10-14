@@ -1,15 +1,12 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
+import { polesarConfig } from './polesar-config.ts';
 import { runCli } from './run-cli.ts';
-
-const config = (checks: Record<string, string>) => ({
-  'polesar.json': JSON.stringify({ verify: { checks } }),
-});
 
 describe('polesar verify', () => {
   it('reports success and exits 0 when every check passes', async () => {
     const result = await runCli(['verify'], {
-      files: config({ format: 'echo formatted', lint: 'true' }),
+      files: polesarConfig({ format: 'echo formatted', lint: 'true' }),
     });
 
     expect(result.exitCode).toBe(0);
@@ -17,9 +14,35 @@ describe('polesar verify', () => {
     expect(result.stderr).toBe('');
   });
 
+  it('finds the config at the git root and runs checks there when run from a subdirectory', async () => {
+    const result = await runCli(['verify'], {
+      cwd: 'packages/app',
+      files: {
+        '.git/HEAD': 'ref: refs/heads/main\n',
+        ...polesarConfig({ 'at-root': 'test -f polesar.json' }),
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe('verify: all 1 checks passed\n');
+  });
+
+  it('does not look for config above the git root', async () => {
+    const result = await runCli(['verify'], {
+      cwd: 'project',
+      files: {
+        'project/.git/HEAD': 'ref: refs/heads/main\n',
+        ...polesarConfig({}),
+      },
+    });
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain('no polesar.json');
+  });
+
   it('lists only the failing checks, where they failed and their full log, and exits 1', async () => {
     const result = await runCli(['verify'], {
-      files: config({
+      files: polesarConfig({
         format: 'echo all files formatted',
         typecheck:
           "echo 'src/a.ts:3:5 - error TS2322: nope' >&2; echo 'Found 1 error.'; exit 2",
@@ -42,7 +65,7 @@ describe('polesar verify', () => {
 
   it('gives structured results for every check with --json', async () => {
     const result = await runCli(['verify', '--json'], {
-      files: config({
+      files: polesarConfig({
         format: 'true',
         lint: "echo 'src/b.ts:7:1 no-unused-vars'; exit 1",
       }),
@@ -104,7 +127,7 @@ describe('polesar verify', () => {
 
   it('shows only the tail of a long failure, leaving the rest to the full log', async () => {
     const result = await runCli(['verify'], {
-      files: config({
+      files: polesarConfig({
         test: 'for i in $(seq 1 100); do echo "line $i"; done; exit 1',
       }),
     });

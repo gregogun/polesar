@@ -21,7 +21,7 @@ Early. The full design is in [#1](https://github.com/gregogun/polesar/issues/1).
 
 ### `polesar verify`
 
-Runs a repo's cheap checks, configured in `polesar.json` at the repo root:
+Runs a repo's cheap checks, configured in `polesar.json` at the repo root. It can be run from anywhere in the repo, and the checks run from the root:
 
 ```json
 {
@@ -38,7 +38,7 @@ Output lists only the checks that failed, with the tail of their output and a pa
 
 ### Stop hook
 
-`polesar hook stop` sends an attended Claude Code agent back with the failure summary when it tries to stop while `verify` fails. Add it to `.claude/settings.json`:
+`polesar hook stop` sends an attended Claude Code agent back with the failure summary when it tries to stop while `verify` fails. It does this once: if the agent stops again with checks still failing, the stop goes through and you get a warning, so a stuck agent can't loop. Add it to `.claude/settings.json`:
 
 ```json
 {
