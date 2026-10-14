@@ -1,7 +1,7 @@
 import { commandsIn, type Command } from './shell.ts';
 
 /** Why a tool call is blocked, written for the agent: what to do instead. */
-type Verdict = { blocked: false } | { blocked: true; reason: string };
+export type Verdict = { blocked: false } | { blocked: true; reason: string };
 
 const allow: Verdict = { blocked: false };
 const block = (reason: string): Verdict => ({ blocked: true, reason });
@@ -61,15 +61,40 @@ const skipsHooks = (args: string[]): boolean => {
 };
 
 const NO_VERIFY = block(
-  'polesar: blocked: git commit must run the pre-commit hooks, so --no-verify (-n), overriding core.hooksPath and LEFTHOOK=0 or HUSKY=0 are not allowed. ' +
+  'polesar: blocked: git commit must run the pre-commit hooks, so --no-verify (-n), changing core.hooksPath and LEFTHOOK=0 or HUSKY=0 are not allowed. ' +
     "Commit without it and fix whatever the hooks report; 'polesar verify' shows which checks fail."
 );
 
 /** Environment that makes a hook manager skip its hooks. */
 const HOOKS_OFF_ENV = /^(LEFTHOOK=(0|false)|HUSKY=0)$/i;
 
+/** `git config` options that write rather than read. */
+const CONFIG_WRITE_OPTIONS =
+  /^--(unset|unset-all|add|replace-all|rename-section|remove-section)$/;
+
+/**
+ * Whether `git config` args change core.hooksPath: setting a value, unsetting
+ * it (which turns off hook managers like husky that set it), or the
+ * `git config set`/`unset` subcommands.
+ */
+const movesHooksPath = (args: string[]): boolean => {
+  const key = args.findIndex((arg) => arg.toLowerCase() === 'core.hookspath');
+  if (key === -1) return false;
+  const before = args.slice(0, key);
+  const after = args.slice(key + 1).filter((arg) => !arg.startsWith('-'));
+  return (
+    after.length > 0 ||
+    before.some((arg) => CONFIG_WRITE_OPTIONS.test(arg)) ||
+    before.includes('set') ||
+    before.includes('unset')
+  );
+};
+
 const checkGit = (args: string[], env: string[]): Verdict => {
   const sub = gitSubcommand(args);
+  if (sub?.name === 'config') {
+    return movesHooksPath(sub.args) ? NO_VERIFY : allow;
+  }
   if (sub?.name !== 'commit') return allow;
   // Pointing core.hooksPath elsewhere for one commit skips the hooks too.
   const movesHooks = sub.globals.some((arg) =>
@@ -145,17 +170,20 @@ const GH_API_VALUE_OPTIONS = new Set([
   '--preview',
 ]);
 
-type GhApiRequest = {
-  /** The endpoint path without its query string or leading slash. */
+/** A GitHub API request, however it is sent: `gh api`, curl or similar. */
+type ApiRequest = {
+  /** The endpoint path without its query string or leading slash; `graphql` for GraphQL. */
   path: string;
   method: string;
-  /** `key=value` fields sent in the request. */
-  fields: { key: string; value: string }[];
+  /** Label names the request sets. */
+  labels: string[];
+  /** The GraphQL query text, if any. */
+  graphql: string;
   /** The request body (or part of it) comes from a file or stdin. */
   opaque: boolean;
 };
 
-const parseGhApi = (args: string[]): GhApiRequest => {
+const parseGhApi = (args: string[]): ApiRequest => {
   const endpoint =
     args.find(
       (arg, i) =>
@@ -174,41 +202,105 @@ const parseGhApi = (args: string[]): GhApiRequest => {
     flagValues(args, ['--input']).length > 0 ||
     typedFields.some((field) => field.includes('=@'));
   const [method] = flagValues(args, ['-X', '--method']);
+  const valuesOf = (key: (name: string) => boolean) =>
+    fields.filter((field) => key(field.key)).map((field) => field.value);
   return {
     path: endpoint.split('?')[0]!.replace(/^\//, ''),
     method:
       method?.toUpperCase() ?? (fields.length > 0 || opaque ? 'POST' : 'GET'),
-    fields,
+    labels: valuesOf((name) => name.startsWith('labels')),
+    graphql: valuesOf((name) => name === 'query').join('\n'),
     opaque,
   };
+};
+
+/** The REST path of a GitHub API URL (github.com or GitHub Enterprise), or undefined for other hosts. */
+const githubApiPath = (url: string): string | undefined => {
+  const match =
+    /^https?:\/\/(?:api\.github\.com\/|[^/]+\/api\/v3\/|[^/]+\/api\/(?=graphql))([^?#]*)/i.exec(
+      url
+    );
+  return match?.[1]?.replace(/\/$/, '');
+};
+
+/** curl options that send a request body. */
+const CURL_DATA_OPTIONS = [
+  '-d',
+  '--data',
+  '--data-ascii',
+  '--data-binary',
+  '--data-raw',
+  '--data-urlencode',
+  '--json',
+  '-F',
+  '--form',
+];
+
+/** Label names in a JSON request body: `{"labels": [...]}` or a bare array. */
+const labelsInBody = (body: unknown): string[] => {
+  const labels = Array.isArray(body)
+    ? body
+    : (body as { labels?: unknown } | null)?.labels;
+  if (typeof labels === 'string') return [labels];
+  if (!Array.isArray(labels)) return [];
+  return labels.map((label: unknown) =>
+    typeof label === 'string'
+      ? label
+      : String((label as { name?: unknown } | null)?.name ?? '')
+  );
+};
+
+/** The GitHub API requests a curl command makes; none if it calls another host. */
+const parseCurl = (args: string[]): ApiRequest[] => {
+  const urls = [
+    ...args.filter((arg) => /^https?:\/\//i.test(arg)),
+    ...flagValues(args, ['--url']),
+  ];
+  const data = flagValues(args, CURL_DATA_OPTIONS);
+  const [method] = flagValues(args, ['-X', '--request']);
+  // curl reads `@file` bodies from disk, and joins several -d values with `&`.
+  let body: unknown;
+  let opaque = data.some((value) => value.startsWith('@'));
+  if (data.length > 0 && !opaque) {
+    try {
+      body = JSON.parse(data.join('&'));
+    } catch {
+      opaque = true;
+    }
+  }
+  const query = (body as { query?: unknown } | null)?.query;
+  return urls.flatMap((url) => {
+    const path = githubApiPath(url);
+    if (path === undefined) return [];
+    return [
+      {
+        path,
+        method: method?.toUpperCase() ?? (data.length > 0 ? 'POST' : 'GET'),
+        labels: labelsInBody(body),
+        graphql: typeof query === 'string' ? query : '',
+        opaque,
+      },
+    ];
+  });
 };
 
 /** Endpoints that create an issue or set an issue's labels. */
 const ISSUE_LABELS_PATH = /(^|\/)issues(\/[^/]+(\/labels)?)?$/;
 
-const graphqlQuery = (request: GhApiRequest) =>
-  request.fields
-    .filter((field) => field.key === 'query')
-    .map((field) => field.value)
-    .join('\n');
-
-const checkLabelWrite = (request: GhApiRequest): Verdict => {
+const checkLabelWrite = (request: ApiRequest): Verdict => {
   if (request.method === 'GET') return allow;
   if (request.path === 'graphql') {
-    const query = graphqlQuery(request);
-    if (request.opaque || /addLabelsToLabelable|labelIds/.test(query)) {
+    if (
+      request.opaque ||
+      /addLabelsToLabelable|labelIds/.test(request.graphql)
+    ) {
       return UNREADABLE_LABELS;
     }
     return allow;
   }
   if (!ISSUE_LABELS_PATH.test(request.path)) return allow;
   if (request.opaque) return UNREADABLE_LABELS;
-  const labels = request.fields.filter((field) =>
-    field.key.startsWith('labels')
-  );
-  return labels.some((field) => namesReadyForAgent(field.value))
-    ? UPGRADE
-    : allow;
+  return request.labels.some(namesReadyForAgent) ? UPGRADE : allow;
 };
 
 const FAKE_STATUS = block(
@@ -220,22 +312,25 @@ const FAKE_STATUS = block(
 const STATUS_PATH =
   /(^|\/)(statuses\/[^/]+|check-runs(\/[^/]+)?|check-suites)$/;
 
-const checkStatusWrite = (request: GhApiRequest): Verdict => {
+const checkStatusWrite = (request: ApiRequest): Verdict => {
   if (request.method === 'GET') return allow;
   if (request.path === 'graphql') {
-    return /(create|update)Check(Run|Suite)/.test(graphqlQuery(request))
+    return /(create|update)Check(Run|Suite)/.test(request.graphql)
       ? FAKE_STATUS
       : allow;
   }
   return STATUS_PATH.test(request.path) ? FAKE_STATUS : allow;
 };
 
+const checkApiRequest = (request: ApiRequest): Verdict => {
+  const verdict = checkStatusWrite(request);
+  return verdict.blocked ? verdict : checkLabelWrite(request);
+};
+
 const checkGh = (args: string[]): Verdict => {
   const [noun, verb] = ghPositionals(args);
   if (noun === 'api') {
-    const request = parseGhApi(args.slice(args.indexOf('api') + 1));
-    const verdict = checkStatusWrite(request);
-    return verdict.blocked ? verdict : checkLabelWrite(request);
+    return checkApiRequest(parseGhApi(args.slice(args.indexOf('api') + 1)));
   }
   const editsLabels =
     (noun === 'issue' || noun === 'pr') &&
@@ -245,6 +340,14 @@ const checkGh = (args: string[]): Verdict => {
     flagValues(args, ['--add-label', '--label', '-l']).some(namesReadyForAgent)
   ) {
     return UPGRADE;
+  }
+  return allow;
+};
+
+const checkCurl = (args: string[]): Verdict => {
+  for (const request of parseCurl(args)) {
+    const verdict = checkApiRequest(request);
+    if (verdict.blocked) return verdict;
   }
   return allow;
 };
@@ -275,7 +378,39 @@ const checkCommand = ({ argv, env }: Command): Verdict => {
   if (acceptsDecision(argv)) return ACCEPT;
   if (program === 'git') return checkGit(args, env);
   if (program === 'gh') return checkGh(args);
+  if (program === 'curl') return checkCurl(args);
   return allow;
+};
+
+/** An MCP tool that only reads, judging by its name (`list_issues`, `issue_read`). */
+const READ_TOOL = /(^|_)(get|list|search|read)(_|$)/i;
+
+/** An MCP tool that posts a commit status or check run. */
+const STATUS_TOOL = /commit_?status|create_?status|check_?(run|suite)/i;
+
+/** Label names under any `label` or `labels` key in an MCP tool's input. */
+const labelsIn = (input: unknown): string[] => {
+  if (Array.isArray(input)) return input.flatMap(labelsIn);
+  if (typeof input !== 'object' || input === null) return [];
+  return Object.entries(input).flatMap(([key, value]) =>
+    /^labels?$/i.test(key)
+      ? [value]
+          .flat()
+          .filter((label): label is string => typeof label === 'string')
+      : labelsIn(value)
+  );
+};
+
+/**
+ * Checks an MCP tool call (`mcp__<server>__<tool>`) against the trust
+ * boundary. MCP tools don't share a schema, so this goes by the tool's name
+ * and any label fields in its input.
+ */
+export const checkMcpTool = (toolName: string, input: unknown): Verdict => {
+  const tool = toolName.slice(toolName.lastIndexOf('__') + 2);
+  if (READ_TOOL.test(tool)) return allow;
+  if (STATUS_TOOL.test(tool)) return FAKE_STATUS;
+  return labelsIn(input).some(namesReadyForAgent) ? UPGRADE : allow;
 };
 
 /** Checks a Bash tool call's command against the trust boundary. */

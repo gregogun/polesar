@@ -1,4 +1,4 @@
-import { checkBash } from './guard.ts';
+import { checkBash, checkMcpTool, type Verdict } from './guard.ts';
 import {
   ConfigError,
   MissingConfigError,
@@ -81,6 +81,9 @@ const failClosed = (problem: string) =>
       "Try the call again; if it keeps being blocked, ask the user to check polesar's PreToolUse hook."
   );
 
+const fromVerdict = (verdict: Verdict): HookResponse =>
+  verdict.blocked ? deny(verdict.reason) : respond();
+
 type ToolCall = { toolName: string; toolInput: unknown };
 
 const parseToolCall = (payload: string): ToolCall | undefined => {
@@ -111,13 +114,15 @@ export const preToolUseHook = async (
         'expected a Claude Code PreToolUse payload on stdin: a JSON object with a "tool_name" string'
       );
     }
+    if (call.toolName.startsWith('mcp__')) {
+      return fromVerdict(checkMcpTool(call.toolName, call.toolInput));
+    }
     if (call.toolName !== 'Bash') return respond();
     const command = (call.toolInput as { command?: unknown } | null)?.command;
     if (typeof command !== 'string') {
       return failClosed('the Bash tool input has no "command" string');
     }
-    const verdict = checkBash(command);
-    return verdict.blocked ? deny(verdict.reason) : respond();
+    return fromVerdict(checkBash(command));
   } catch (error) {
     return failClosed(error instanceof Error ? error.message : String(error));
   }

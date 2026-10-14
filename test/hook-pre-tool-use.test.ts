@@ -55,6 +55,10 @@ describe('polesar hook pre-tool-use: skipping pre-commit checks', () => {
     'LEFTHOOK=0 git commit -m wip',
     'HUSKY=0 git commit -m wip',
     'env LEFTHOOK=false git commit -m wip',
+    'git config core.hooksPath /dev/null',
+    'git config --local core.hooksPath .nohooks',
+    'git config set core.hookspath x',
+    'git config --unset core.hooksPath',
   ])('blocks the equivalent form: %s', async (command) => {
     await expectBlocked(bash(command), /--no-verify/);
   });
@@ -66,6 +70,9 @@ describe('polesar hook pre-tool-use: skipping pre-commit checks', () => {
     'git status -n',
     'git commit -m "$(cat <<\'EOF\'\nDocs: never git commit -n\nEOF\n)"',
     "cat <<'EOF' > notes.md\ngit commit --no-verify\nEOF\ngit commit -m notes",
+    'git config core.hooksPath',
+    'git config --get core.hooksPath',
+    'git config user.name me',
   ])('allows commits that only mention it: %s', async (command) => {
     await expectAllowed(bash(command));
   });
@@ -132,6 +139,78 @@ describe('polesar hook pre-tool-use: adding ready-for-agent through gh api', () 
     `gh api graphql -f query='query { repository(owner: "o", name: "r") { label(name: "ready-for-agent") { id } } }'`,
   ])('allows %s', async (command) => {
     await expectAllowed(bash(command));
+  });
+});
+
+describe('polesar hook pre-tool-use: calling the GitHub API with curl', () => {
+  it.each([
+    [
+      `curl -X POST -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/o/r/issues/5/labels -d '{"labels":["ready-for-agent"]}'`,
+      /ready-for-agent/,
+    ],
+    [
+      `curl https://api.github.com/repos/o/r/issues/5/labels --json '["Ready-For-Agent"]'`,
+      /ready-for-agent/,
+    ],
+    [
+      'curl -XPOST https://api.github.com/repos/o/r/issues/5/labels -d @labels.json',
+      /gh issue edit --add-label/,
+    ],
+    [
+      `curl -s https://api.github.com/repos/o/r/statuses/abc -d '{"state":"success"}'`,
+      /commit status/,
+    ],
+    [
+      `curl https://ghe.example.com/api/v3/repos/o/r/check-runs --data '{"name":"ci"}'`,
+      /commit status/,
+    ],
+    [
+      `curl https://api.github.com/graphql -d '{"query":"mutation { createCheckRun(input: {}) { clientMutationId } }"}'`,
+      /commit status/,
+    ],
+  ])('blocks %s', async (command, why) => {
+    await expectBlocked(bash(command), why);
+  });
+
+  it.each([
+    'curl https://api.github.com/repos/o/r/issues/5/labels',
+    `curl https://api.github.com/repos/o/r/issues/5/labels -d '{"labels":["bug"]}'`,
+    `curl -X POST https://api.github.com/repos/o/r/issues/5/comments -d '{"body":"ready-for-agent?"}'`,
+    `curl -X POST https://example.com/statuses/abc -d '{"state":"success"}'`,
+  ])('allows %s', async (command) => {
+    await expectAllowed(bash(command));
+  });
+});
+
+describe('polesar hook pre-tool-use: MCP tools', () => {
+  it.each([
+    [
+      'mcp__github__issue_write',
+      { method: 'update', issue_number: 5, labels: ['bug', 'ready-for-agent'] },
+      /ready-for-agent/,
+    ],
+    [
+      'mcp__claude_ai_GitHub__add_labels',
+      { issue: 5, labels: 'Ready-For-Agent' },
+      /ready-for-agent/,
+    ],
+    [
+      'mcp__github__create_commit_status',
+      { sha: 'abc', state: 'success' },
+      /commit status/,
+    ],
+  ])('blocks %s', async (tool, input, why) => {
+    await expectBlocked(toolCall(tool, input), why);
+  });
+
+  it.each([
+    ['mcp__github__list_issues', { labels: ['ready-for-agent'] }],
+    ['mcp__github__search_issues', { query: 'label:ready-for-agent' }],
+    ['mcp__github__issue_write', { method: 'update', labels: ['bug'] }],
+    ['mcp__linear__update_issue_status', { status: 'done' }],
+    ['mcp__github__get_me', undefined],
+  ])('allows %s', async (tool, input) => {
+    await expectAllowed(toolCall(tool, input as Record<string, unknown>));
   });
 });
 
