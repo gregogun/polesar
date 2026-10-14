@@ -8,10 +8,6 @@
 /** Substitutions nested deeper than this aren't analysed; the caller should fail closed. */
 const MAX_DEPTH = 16;
 
-export class UnanalysableCommandError extends Error {
-  override name = 'UnanalysableCommandError';
-}
-
 const SEPARATORS = new Set([';', '&', '|', '(', ')', '\n']);
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh']);
 /** Commands that run their arguments as another command. */
@@ -63,6 +59,18 @@ const lex = (source: string): Lexed => {
   const append = (text: string) => {
     word = (word ?? '') + text;
   };
+  /** Collects a `$(...)` or backtick substitution at `at`; returns the index after it. */
+  const substitutionAt = (at: number): number | undefined => {
+    const read = source.startsWith('$(', at)
+      ? readSubstitution(source, at + 2)
+      : source[at] === '`'
+        ? readBackticks(source, at + 1)
+        : undefined;
+    if (read === undefined) return undefined;
+    substitutions.push(read.body);
+    append(source.slice(at, read.end));
+    return read.end;
+  };
   const skipHeredocBodies = (from: number): number => {
     let i = from;
     for (const { delimiter, stripTabs } of heredocs.splice(0)) {
@@ -97,32 +105,15 @@ const lex = (source: string): Lexed => {
         if (source[i] === '\\' && '"\\$`'.includes(source[i + 1] ?? '')) {
           append(source[i + 1]!);
           i += 2;
-        } else if (source.startsWith('$(', i)) {
-          const { body, end } = readSubstitution(source, i + 2);
-          substitutions.push(body);
-          append(source.slice(i, end));
-          i = end;
-        } else if (source[i] === '`') {
-          const { body, end } = readBackticks(source, i + 1);
-          substitutions.push(body);
-          append(source.slice(i, end));
-          i = end;
         } else {
-          append(source[i]!);
-          i++;
+          const end = substitutionAt(i);
+          if (end === undefined) append(source[i]!);
+          i = end ?? i + 1;
         }
       }
       i++;
-    } else if (source.startsWith('$(', i)) {
-      const { body, end } = readSubstitution(source, i + 2);
-      substitutions.push(body);
-      append(source.slice(i, end));
-      i = end;
-    } else if (char === '`') {
-      const { body, end } = readBackticks(source, i + 1);
-      substitutions.push(body);
-      append(source.slice(i, end));
-      i = end;
+    } else if (char === '`' || source.startsWith('$(', i)) {
+      i = substitutionAt(i)!;
     } else if (source.startsWith('<<', i) && !source.startsWith('<<<', i)) {
       endWord();
       i += 2;
@@ -155,20 +146,26 @@ const lex = (source: string): Lexed => {
   return { commands, substitutions };
 };
 
+/** A simple command, with the `VAR=value` assignments made for it. */
+export type Command = { argv: string[]; env: string[] };
+
 /**
  * The command(s) an argv runs once leading `VAR=value` assignments and
- * wrappers like `sudo` and `env` are dropped. A wrapper's option values
+ * wrappers like `sudo` and `env` are moved aside. A wrapper's option values
  * (`sudo -u root ...`) can't be told from the command, so every suffix
  * after the wrapper is a candidate: extra candidates only over-report.
  */
-const unwrap = (argv: string[]): string[][] => {
+const unwrap = (argv: string[], env: string[] = []): Command[] => {
   const start = argv.findIndex((arg) => !ASSIGNMENT.test(arg));
   if (start === -1) return [];
+  const assigned = [...env, ...argv.slice(0, start)];
   const [first, ...tail] = argv.slice(start);
   const program = basename(first!);
-  if (!WRAPPERS.has(program)) return [[program, ...tail]];
+  if (!WRAPPERS.has(program)) {
+    return [{ argv: [program, ...tail], env: assigned }];
+  }
   return tail.flatMap((arg, index) =>
-    arg.startsWith('-') ? [] : unwrap(tail.slice(index))
+    arg.startsWith('-') ? [] : unwrap(tail.slice(index), assigned)
   );
 };
 
@@ -181,21 +178,21 @@ const innerScript = ([name, ...args]: string[]): string | undefined => {
 };
 
 /**
- * Every simple command a Bash tool call would run, as argv lists with
- * assignments and wrappers dropped and the program reduced to its basename.
- * Throws `UnanalysableCommandError` for absurdly nested scripts.
+ * Every simple command a Bash tool call would run, with the program reduced
+ * to its basename. Throws for absurdly nested scripts, which the caller
+ * should treat as unanalysable.
  */
-export const commandsIn = (script: string, depth = 0): string[][] => {
+export const commandsIn = (script: string, depth = 0): Command[] => {
   if (depth > MAX_DEPTH) {
-    throw new UnanalysableCommandError(
+    throw new Error(
       `command substitutions or nested shells deeper than ${MAX_DEPTH} levels`
     );
   }
   const { commands, substitutions } = lex(script);
-  const found: string[][] = [];
-  for (const command of commands.flatMap(unwrap)) {
+  const found: Command[] = [];
+  for (const command of commands.flatMap((argv) => unwrap(argv))) {
     found.push(command);
-    const inner = innerScript(command);
+    const inner = innerScript(command.argv);
     if (inner !== undefined) found.push(...commandsIn(inner, depth + 1));
   }
   for (const body of substitutions) found.push(...commandsIn(body, depth + 1));

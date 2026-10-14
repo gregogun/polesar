@@ -1,4 +1,4 @@
-import { commandsIn } from './shell.ts';
+import { commandsIn, type Command } from './shell.ts';
 
 /** Why a tool call is blocked, written for the agent: what to do instead. */
 type Verdict = { blocked: false } | { blocked: true; reason: string };
@@ -61,18 +61,22 @@ const skipsHooks = (args: string[]): boolean => {
 };
 
 const NO_VERIFY = block(
-  'polesar: blocked: git commit must run the pre-commit hooks, so --no-verify (-n) and overriding core.hooksPath are not allowed. ' +
+  'polesar: blocked: git commit must run the pre-commit hooks, so --no-verify (-n), overriding core.hooksPath and LEFTHOOK=0 or HUSKY=0 are not allowed. ' +
     "Commit without it and fix whatever the hooks report; 'polesar verify' shows which checks fail."
 );
 
-const checkGit = (args: string[]): Verdict => {
+/** Environment that makes a hook manager skip its hooks. */
+const HOOKS_OFF_ENV = /^(LEFTHOOK=(0|false)|HUSKY=0)$/i;
+
+const checkGit = (args: string[], env: string[]): Verdict => {
   const sub = gitSubcommand(args);
   if (sub?.name !== 'commit') return allow;
   // Pointing core.hooksPath elsewhere for one commit skips the hooks too.
   const movesHooks = sub.globals.some((arg) =>
     arg.toLowerCase().startsWith('core.hookspath=')
   );
-  if (movesHooks || skipsHooks(sub.args)) return NO_VERIFY;
+  const hooksOff = env.some((assignment) => HOOKS_OFF_ENV.test(assignment));
+  if (movesHooks || hooksOff || skipsHooks(sub.args)) return NO_VERIFY;
   return allow;
 };
 
@@ -182,13 +186,16 @@ const parseGhApi = (args: string[]): GhApiRequest => {
 /** Endpoints that create an issue or set an issue's labels. */
 const ISSUE_LABELS_PATH = /(^|\/)issues(\/[^/]+(\/labels)?)?$/;
 
-const addsReadyForAgent = (request: GhApiRequest): Verdict => {
+const graphqlQuery = (request: GhApiRequest) =>
+  request.fields
+    .filter((field) => field.key === 'query')
+    .map((field) => field.value)
+    .join('\n');
+
+const checkLabelWrite = (request: GhApiRequest): Verdict => {
   if (request.method === 'GET') return allow;
   if (request.path === 'graphql') {
-    const query = request.fields
-      .filter((field) => field.key === 'query')
-      .map((field) => field.value)
-      .join('\n');
+    const query = graphqlQuery(request);
     if (request.opaque || /addLabelsToLabelable|labelIds/.test(query)) {
       return UNREADABLE_LABELS;
     }
@@ -204,7 +211,7 @@ const addsReadyForAgent = (request: GhApiRequest): Verdict => {
     : allow;
 };
 
-const STATUS = block(
+const FAKE_STATUS = block(
   "polesar: blocked: only polesar's gate may post commit statuses or check runs, so an agent can't report its own work green. " +
     "Run the checks ('polesar verify') and tell the user the results instead."
 );
@@ -213,21 +220,22 @@ const STATUS = block(
 const STATUS_PATH =
   /(^|\/)(statuses\/[^/]+|check-runs(\/[^/]+)?|check-suites)$/;
 
-const postsStatus = (request: GhApiRequest): Verdict => {
+const checkStatusWrite = (request: GhApiRequest): Verdict => {
   if (request.method === 'GET') return allow;
   if (request.path === 'graphql') {
-    const query = request.fields.map((field) => field.value).join('\n');
-    return /(create|update)Check(Run|Suite)/.test(query) ? STATUS : allow;
+    return /(create|update)Check(Run|Suite)/.test(graphqlQuery(request))
+      ? FAKE_STATUS
+      : allow;
   }
-  return STATUS_PATH.test(request.path) ? STATUS : allow;
+  return STATUS_PATH.test(request.path) ? FAKE_STATUS : allow;
 };
 
 const checkGh = (args: string[]): Verdict => {
   const [noun, verb] = ghPositionals(args);
   if (noun === 'api') {
     const request = parseGhApi(args.slice(args.indexOf('api') + 1));
-    const verdict = postsStatus(request);
-    return verdict.blocked ? verdict : addsReadyForAgent(request);
+    const verdict = checkStatusWrite(request);
+    return verdict.blocked ? verdict : checkLabelWrite(request);
   }
   const editsLabels =
     (noun === 'issue' || noun === 'pr') &&
@@ -246,21 +254,26 @@ const ACCEPT = block(
     "Leave the proposal pending and ask the user to run 'polesar decide accept' themselves."
 );
 
+/** The polesar bin, or its entry point run through node. */
+const POLESAR = /(^|\/)(polesar|cli\.[cm]?[jt]s)$/;
+
 /**
- * Whether an argv runs `decide accept`. polesar may be launched through
- * node, pnpm, npx and the like, so this looks at the args of any program.
+ * Whether an argv runs `polesar decide accept`. polesar may be launched
+ * through node, pnpm, npx and the like, so this looks for polesar anywhere
+ * before `decide`.
  */
 const acceptsDecision = (argv: string[]) =>
   argv.some(
     (arg, i) =>
       arg === 'decide' &&
+      argv.slice(0, i).some((before) => POLESAR.test(before)) &&
       argv.slice(i + 1).find((next) => !next.startsWith('-')) === 'accept'
   );
 
-const checkCommand = (argv: string[]): Verdict => {
+const checkCommand = ({ argv, env }: Command): Verdict => {
   const [program, ...args] = argv;
   if (acceptsDecision(argv)) return ACCEPT;
-  if (program === 'git') return checkGit(args);
+  if (program === 'git') return checkGit(args, env);
   if (program === 'gh') return checkGh(args);
   return allow;
 };

@@ -52,6 +52,9 @@ describe('polesar hook pre-tool-use: skipping pre-commit checks', () => {
     'echo $(git commit -n)',
     'git -c core.hooksPath=/dev/null commit -m wip',
     'git -c core.hookspath=x commit -m wip',
+    'LEFTHOOK=0 git commit -m wip',
+    'HUSKY=0 git commit -m wip',
+    'env LEFTHOOK=false git commit -m wip',
   ])('blocks the equivalent form: %s', async (command) => {
     await expectBlocked(bash(command), /--no-verify/);
   });
@@ -182,6 +185,8 @@ describe('polesar hook pre-tool-use: accepting decisions', () => {
     'polesar decide propose --from docs/adr/0007.md',
     'polesar decide review',
     'echo "run polesar decide accept when ready"',
+    'echo decide accept',
+    'grep -r decide accept',
   ])('allows other decision commands: %s', async (command) => {
     await expectAllowed(bash(command));
   });

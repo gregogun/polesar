@@ -41,7 +41,9 @@ const readSettings = async (file: string): Promise<Record<string, unknown>> => {
     );
   }
   if (!isRecord(settings)) {
-    throw new ConfigError(`${file} must hold a JSON object`);
+    throw new ConfigError(
+      `${file} must hold a JSON object. Fix it and run install-hooks again.`
+    );
   }
   return settings;
 };
@@ -69,14 +71,18 @@ export const installHooks = async (
   const settings = await readSettings(file);
   const hooks = settings.hooks ?? {};
   if (!isRecord(hooks)) {
-    throw new ConfigError(`${file}: "hooks" must be an object`);
+    throw new ConfigError(
+      `${file}: "hooks" must map event names to arrays of hook groups. Fix it and run install-hooks again.`
+    );
   }
   const added: HookSpec[] = [];
   const present: HookSpec[] = [];
   for (const spec of polesarHooks(polesar)) {
     const groups = hooks[spec.event] ?? [];
     if (!Array.isArray(groups)) {
-      throw new ConfigError(`${file}: "hooks.${spec.event}" must be an array`);
+      throw new ConfigError(
+        `${file}: "hooks.${spec.event}" must be an array of hook groups. Fix it and run install-hooks again.`
+      );
     }
     if (isInstalled(groups, spec.command)) {
       present.push(spec);
