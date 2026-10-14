@@ -9,6 +9,8 @@ const CLI = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
 type RunCliOptions = {
   /** Written to the child's stdin, which is then closed. A function gets the child's cwd. */
   stdin?: string | ((cwd: string) => string);
+  /** An existing directory to run in instead of a fresh temp dir; it's left in place. */
+  dir?: string;
   /** Files (e.g. config) written into a fresh temp dir used as the child's cwd. */
   files?: Record<string, string>;
   /** Subdirectory of that temp dir to run in, created if missing. */
@@ -28,7 +30,8 @@ export const runCli = async (
   args: string[],
   options: RunCliOptions = {}
 ): Promise<CliResult> => {
-  const cwd = await mkdtemp(path.join(tmpdir(), 'polesar-test-'));
+  const cwd =
+    options.dir ?? (await mkdtemp(path.join(tmpdir(), 'polesar-test-')));
   try {
     for (const [name, content] of Object.entries(options.files ?? {})) {
       const file = path.join(cwd, name);
@@ -61,6 +64,8 @@ export const runCli = async (
       child.stdin.end(typeof stdin === 'function' ? stdin(cwd) : stdin);
     });
   } finally {
-    await rm(cwd, { recursive: true, force: true });
+    if (options.dir === undefined) {
+      await rm(cwd, { recursive: true, force: true });
+    }
   }
 };

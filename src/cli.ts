@@ -2,7 +2,8 @@
 import { readFileSync } from 'node:fs';
 import { text } from 'node:stream/consumers';
 import { parseArgs, type ParseArgsOptionsConfig } from 'node:util';
-import { stopHook } from './hook.ts';
+import { preToolUseHook, stopHook, type HookResponse } from './hook.ts';
+import { describeInstall, installHooks } from './install-hooks.ts';
 import { ConfigError, summarise, verify } from './verify.ts';
 
 const HELP = `Usage: polesar [options]
@@ -17,11 +18,26 @@ Commands:
                    where they failed and a path to the full log. --json gives
                    structured results for every check.
                    Exit: 0 all passed, 1 a check failed, 2 bad usage or config.
+  hook pre-tool-use
+                   Claude Code PreToolUse hook guarding the trust boundary.
+                   Reads the hook payload on stdin and blocks (exit 2, reason
+                   on stderr) Bash commands that add the ready-for-agent
+                   label, skip pre-commit hooks (git commit --no-verify),
+                   post commit statuses or check runs, or run decide accept.
+                   Fails closed: a payload it can't read, or any error, blocks.
   hook stop        Claude Code Stop hook. Reads the hook payload on stdin and
                    runs verify from its cwd. Sends the agent back once with the
                    failure summary while checks fail; if it stops again with
                    checks still failing, the stop goes through with a warning.
                    Allows the stop in repos without polesar.json.
+  install-hooks [--dry-run] [--command <cmd>]
+                   Add the PreToolUse and Stop hooks to .claude/settings.json
+                   at the git root, keeping existing settings. Hooks already
+                   there are left alone, so rerunning changes nothing.
+                   --command sets how hooks run polesar (default: polesar),
+                   e.g. 'node "$CLAUDE_PROJECT_DIR/src/cli.ts"'. --dry-run
+                   reports what would be added without writing.
+                   Exit: 0 installed or up to date, 2 bad usage or settings.
 
 Options:
   -h, --help       Show this help and exit
@@ -72,14 +88,21 @@ const parseCommandArgsOrExit = <T extends ParseArgsOptionsConfig>(
   return parsed;
 };
 
-const verifyOrExit = async (cwd: string) => {
+/** Runs `action`, exiting 2 with the message on a config error. */
+const orExitOnConfigError = async <T>(action: () => Promise<T>) => {
   try {
-    return await verify(cwd);
+    return await action();
   } catch (error) {
     if (!(error instanceof ConfigError)) throw error;
     process.stderr.write(`polesar: ${error.message}\n`);
     process.exit(2);
   }
+};
+
+const writeHookResponse = (response: HookResponse) => {
+  process.stdout.write(response.stdout);
+  process.stderr.write(response.stderr);
+  process.exitCode = response.exitCode;
 };
 
 const [command, ...rest] = process.argv.slice(2);
@@ -88,27 +111,38 @@ if (command === 'verify') {
   const { values } = parseCommandArgsOrExit(rest, {
     json: { type: 'boolean' },
   });
-  const result = await verifyOrExit(process.cwd());
+  const result = await orExitOnConfigError(() => verify(process.cwd()));
   process.stdout.write(
     values.json ? `${JSON.stringify(result, null, 2)}\n` : summarise(result)
   );
   process.exitCode = result.passed ? 0 : 1;
+} else if (command === 'install-hooks') {
+  const { values } = parseCommandArgsOrExit(rest, {
+    'dry-run': { type: 'boolean' },
+    command: { type: 'string' },
+  });
+  const options = { polesar: values.command, dryRun: values['dry-run'] };
+  const result = await orExitOnConfigError(() =>
+    installHooks(process.cwd(), options)
+  );
+  process.stdout.write(describeInstall(result, options));
 } else if (command === 'hook') {
   const { positionals } = parseCommandArgsOrExit(
     rest,
     {},
     { allowPositionals: true }
   );
-  if (positionals.length !== 1 || positionals[0] !== 'stop') {
+  const event = positionals.length === 1 ? positionals[0] : undefined;
+  if (event === 'pre-tool-use') {
+    writeHookResponse(await preToolUseHook(text(process.stdin)));
+  } else if (event === 'stop') {
+    writeHookResponse(await stopHook(await text(process.stdin)));
+  } else {
     process.stderr.write(
-      `polesar: unknown hook '${positionals.join(' ')}'. Supported: stop\nRun 'polesar --help' for usage.\n`
+      `polesar: unknown hook '${positionals.join(' ')}'. Supported: pre-tool-use, stop\nRun 'polesar --help' for usage.\n`
     );
     process.exit(2);
   }
-  const response = await stopHook(await text(process.stdin));
-  process.stdout.write(response.stdout);
-  process.stderr.write(response.stderr);
-  process.exitCode = response.exitCode;
 } else {
   const { values } = parseArgsOrExit(process.argv.slice(2), {
     help,
