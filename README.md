@@ -15,7 +15,42 @@ polesar is the policy layer. Execution (sandbox, worktree, agent run) is delegat
 
 ## Status
 
-Early. The CLI currently supports only `--help` and `--version`. The full design is in [#1](https://github.com/gregogun/polesar/issues/1).
+Early. The full design is in [#1](https://github.com/gregogun/polesar/issues/1).
+
+## Usage
+
+### `polesar verify`
+
+Runs a repo's cheap checks, configured in `polesar.json` at the repo root. It can be run from anywhere in the repo, and the checks run from the root:
+
+```json
+{
+  "verify": {
+    "checks": {
+      "typecheck": "pnpm tsc --noEmit",
+      "lint": "pnpm eslint ."
+    }
+  }
+}
+```
+
+Output lists only the checks that failed, with the tail of their output and a path to the full log. `--json` gives structured results for every check. Exit codes: `0` all passed, `1` a check failed, `2` bad usage or config.
+
+### Stop hook
+
+`polesar hook stop` sends an attended Claude Code agent back with the failure summary when it tries to stop while `verify` fails. It does this once: if the agent stops again with checks still failing, the stop goes through and you get a warning, so a stuck agent can't loop. Add it to `.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "polesar hook stop" }] }
+    ]
+  }
+}
+```
+
+Repos without `polesar.json` are left alone.
 
 ## Development
 
