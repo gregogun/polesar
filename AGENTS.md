@@ -6,8 +6,8 @@ TypeScript CLI, pnpm. Node 24 (`.nvmrc`); TS runs natively in dev, `dist/` is bu
 
 ## Layout
 
-- `src/cli.ts`: CLI entry point (the `polesar` bin, built to `dist/cli.js`)
-- `test/`: tests at the CLI boundary. Use `runCli` from `test/run-cli.ts`; don't test internals.
+- `src/cli.ts`: CLI entry point (the `polesar` bin, built to `dist/cli.js`): wires real adapters into `main` (`src/main.ts`)
+- `test/`: tests at the CLI boundary. Use `runCli` from `test/run-cli.ts`; don't test internals. It runs `test/cli-with-fakes.ts`, which wires in-memory fakes for ports (e.g. `trackerGraph` scripts the tracker). The exception is `test/tracker-contract.test.ts`, which checks the GitHub adapter against the fake.
 
 ## Running
 

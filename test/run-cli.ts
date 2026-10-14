@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const CLI = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
+const CLI = fileURLToPath(new URL('./cli-with-fakes.ts', import.meta.url));
 
 type RunCliOptions = {
   /** Written to the child's stdin, which is then closed. A function gets the child's cwd. */
@@ -25,7 +25,7 @@ export type CliResult = {
   stderr: string;
 };
 
-/** Spawns the real polesar CLI, as a user or agent would, and captures the result. */
+/** Spawns the polesar CLI (with fakes for any ports the test scripts), as a user or agent would, and captures the result. */
 export const runCli = async (
   args: string[],
   options: RunCliOptions = {}
