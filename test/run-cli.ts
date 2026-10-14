@@ -7,8 +7,8 @@ import { fileURLToPath } from 'node:url';
 const CLI = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
 
 type RunCliOptions = {
-  /** Written to the child's stdin, which is then closed. */
-  stdin?: string;
+  /** Written to the child's stdin, which is then closed. A function gets the child's cwd. */
+  stdin?: string | ((cwd: string) => string);
   /** Files (e.g. config) written into a fresh temp dir used as the child's cwd. */
   files?: Record<string, string>;
   /** Extra environment variables, on top of a minimal base. */
@@ -53,7 +53,8 @@ export const runCli = async (
       });
       child.on('error', reject);
       child.on('close', (exitCode) => resolve({ exitCode, stdout, stderr }));
-      child.stdin.end(options.stdin ?? '');
+      const { stdin = '' } = options;
+      child.stdin.end(typeof stdin === 'function' ? stdin(cwd) : stdin);
     });
   } finally {
     await rm(cwd, { recursive: true, force: true });

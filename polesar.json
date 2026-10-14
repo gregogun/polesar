@@ -1,0 +1,9 @@
+{
+  "verify": {
+    "checks": {
+      "format": "pnpm -s format:check",
+      "lint": "pnpm -s lint",
+      "typecheck": "pnpm -s types:check"
+    }
+  }
+}

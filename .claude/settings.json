@@ -9,5 +9,17 @@
       "Bash(less **/.env*)",
       "Bash(more **/.env*)"
     ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/src/cli.ts\" hook stop"
+          }
+        ]
+      }
+    ]
   }
 }
