@@ -38,7 +38,7 @@ Output lists only the checks that failed, with the tail of their output and a pa
 
 ### `polesar frontier`
 
-Lists the frontier: the open `ready-for-agent` tickets whose blockers are all closed. These are the tickets an agent may work on its own. Tickets come from the repo's GitHub Issues via `gh`, and blockers from GitHub's native "blocked by" relationships. A `ready-for-human` ticket is never on the frontier. When one holds up AFK work, it's listed separately with how many `ready-for-agent` tickets are waiting on it, directly or through other open tickets. `--json` gives `{tickets, humanBlockers}`. Exit codes: `0` listed (even if empty), `1` GitHub couldn't be read, `2` bad usage.
+Lists the frontier: the open `ready-for-agent` tickets whose blockers are all closed. These are the tickets an agent may work on its own. Tickets come from the repo's GitHub Issues via `gh`, and blockers from GitHub's native "blocked by" relationships. A `ready-for-human` ticket is never on the frontier. When one holds up AFK work, it's listed separately with how many `ready-for-agent` tickets the loop could finish on its own once it closes (`unblocks`), how many wait on it in all (`waiting`, which also counts work held up by other tickets), and its own open blockers, if any. `--json` gives `{tickets, humanBlockers}`. Exit codes: `0` listed (even if empty), `1` GitHub couldn't be read, `2` bad usage.
 
 The Tracker contract tests check the GitHub adapter against the fake tracker used in tests. They're opt-in and need a throwaway repo you can create and delete issues in: `POLESAR_CONTRACT_REPO=you/scratch-repo pnpm vitest run test/tracker-contract.test.ts`.
 

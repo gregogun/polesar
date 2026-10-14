@@ -24,7 +24,8 @@ Commands:
                    blockers (GitHub's native "blocked by") are all closed.
                    ready-for-human tickets are never on it; those holding up
                    AFK work are listed with how many ready-for-agent tickets
-                   wait on them, directly or through other open tickets.
+                   the loop could then finish on its own (unblocks), how many
+                   wait on them in all, and their own open blockers.
                    Reads GitHub Issues via gh for the current directory's repo.
                    --json gives {tickets, humanBlockers}.
                    Exit: 0 listed (even if empty), 1 GitHub couldn't be read,

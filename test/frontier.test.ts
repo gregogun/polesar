@@ -77,6 +77,72 @@ describe('polesar frontier', () => {
     );
   });
 
+  it('counts as unblocked only the AFK work the loop could then finish on its own, and how much more waits on it', async () => {
+    const result = await frontier([
+      { number: 1, title: 'Pick a database', labels: ['ready-for-human'] },
+      { number: 2, title: 'Pick a host', labels: ['ready-for-human'] },
+      { number: 3, title: 'Docs', labels: ['ready-for-agent'] },
+      {
+        number: 4,
+        title: 'Schema',
+        labels: ['ready-for-agent'],
+        // The loop clears #3 itself, so only #1 stands in the way.
+        blockedBy: [1, 3],
+      },
+      {
+        number: 5,
+        title: 'Deploy',
+        labels: ['ready-for-agent'],
+        // Needs both decisions: neither frees it alone.
+        blockedBy: [1, 2],
+      },
+      { number: 6, title: 'Spike', labels: ['needs-triage'], blockedBy: [1] },
+      {
+        number: 7,
+        title: 'Follow-up',
+        labels: ['ready-for-agent'],
+        // Waits on #1 only through a ticket the loop can't do.
+        blockedBy: [6],
+      },
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(
+      [
+        'frontier: 1 ticket',
+        '  #3 Docs',
+        '',
+        'ready-for-human tickets blocking AFK work:',
+        '  #1 Pick a database (unblocks 1; 3 wait on it)',
+        '  #2 Pick a host (unblocks 0; 1 waits on it)',
+        '',
+      ].join('\n')
+    );
+  });
+
+  it('says when a ready-for-human ticket blocking AFK work is itself blocked', async () => {
+    const result = await frontier([
+      { number: 1, title: 'Prototype', labels: ['ready-for-agent'] },
+      {
+        number: 2,
+        title: 'Choose the API',
+        labels: ['ready-for-human'],
+        blockedBy: [1, { repo: 'acme/lib', number: 9, state: 'open' }],
+      },
+      {
+        number: 3,
+        title: 'Build the API',
+        labels: ['ready-for-agent'],
+        blockedBy: [2],
+      },
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain(
+      '  #2 Choose the API (unblocks 1; blocked by #1, acme/lib#9)\n'
+    );
+  });
+
   it('treats a blocker in another repo as its own ticket, not the local ticket with its number', async () => {
     const result = await frontier([
       { number: 1, title: 'Local decision', labels: ['ready-for-human'] },
@@ -116,7 +182,9 @@ describe('polesar frontier', () => {
     expect(result.exitCode).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual({
       tickets: [{ number: 3, title: 'Docs' }],
-      humanBlockers: [{ number: 1, title: 'Decide', unblocks: 1 }],
+      humanBlockers: [
+        { number: 1, title: 'Decide', unblocks: 1, waiting: 1, blockedBy: [] },
+      ],
     });
   });
 
