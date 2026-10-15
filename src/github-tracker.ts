@@ -9,6 +9,7 @@ import {
 type ListedIssue = {
   number: number;
   title: string;
+  body: string;
   labels: string[];
   /** The issue's repo, as an API URL. */
   repositoryUrl: string;
@@ -86,15 +87,23 @@ export class GitHubTracker implements Tracker {
         '--paginate',
         `repos/${this.#apiRepo}/issues?state=open&per_page=100`,
         '--jq',
-        '.[] | select(.pull_request == null) | {number, title, labels: [.labels[].name], repositoryUrl: .repository_url, totalBlockedBy: .issue_dependencies_summary.total_blocked_by}',
+        '.[] | select(.pull_request == null) | {number, title, body: (.body // ""), labels: [.labels[].name], repositoryUrl: .repository_url, totalBlockedBy: .issue_dependencies_summary.total_blocked_by}',
       ])
     );
     const tickets = await mapLimited(
       issues,
       CONCURRENCY,
-      async ({ number, title, labels, repositoryUrl, totalBlockedBy }) => ({
+      async ({
         number,
         title,
+        body,
+        labels,
+        repositoryUrl,
+        totalBlockedBy,
+      }) => ({
+        number,
+        title,
+        body,
         labels,
         // Fetch blockers unless GitHub says there are none, so a missing summary can't hide one.
         blockedBy:
@@ -126,6 +135,22 @@ export class GitHubTracker implements Tracker {
       label,
       ...this.#repoFlag,
     ]);
+  }
+
+  async comment(ticket: number, body: string): Promise<void> {
+    await gh([
+      'issue',
+      'comment',
+      String(ticket),
+      '--body',
+      body,
+      ...this.#repoFlag,
+    ]);
+  }
+
+  async close(ticket: number): Promise<void> {
+    // gh exits 0 on an issue that's already closed, e.g. by its PR merging.
+    await gh(['issue', 'close', String(ticket), ...this.#repoFlag]);
   }
 
   async #blockers(ticket: number, ownRepoUrl: string): Promise<Blocker[]> {

@@ -29,6 +29,8 @@ type Arrange = () => Promise<Arranged>;
 
 const LABELS = ['ready-for-agent', 'ready-for-human'];
 
+const BODY = 'Created by the polesar tracker contract tests; safe to delete.';
+
 const contract = (arrange: Arrange) => {
   it('lists only open tickets, with their labels and every blocker and whether it is open', async () => {
     const { tracker, open, closed, blocked } = await arrange();
@@ -42,6 +44,7 @@ const contract = (arrange: Arrange) => {
     expect(numbers).toEqual([...numbers].sort((a, b) => a - b));
     const ticket = tickets.find((each) => each.number === blocked);
     expect(ticket?.title).toBe('Blocked ticket');
+    expect(ticket?.body).toBe(BODY);
     expect(ticket?.labels).toEqual(['ready-for-agent']);
     expect(
       [...(ticket?.blockedBy ?? [])].sort((a, b) => a.number - b.number)
@@ -68,6 +71,17 @@ const contract = (arrange: Arrange) => {
     await tracker.removeLabel(open, 'ready-for-agent');
     expect(await labelsOf()).toEqual(['ready-for-human']);
   });
+
+  it('comments on and closes a ticket, ignoring a close of one already closed', async () => {
+    const { tracker, open } = await arrange();
+
+    await tracker.comment(open, 'Merged by polesar.');
+    await tracker.close(open);
+    await tracker.close(open);
+
+    const numbers = (await tracker.openTickets()).map(({ number }) => number);
+    expect(numbers).not.toContain(open);
+  });
 };
 
 describe('Tracker contract: fake', () => {
@@ -79,6 +93,7 @@ describe('Tracker contract: fake', () => {
         {
           number: 3,
           title: 'Blocked ticket',
+          body: BODY,
           labels: ['ready-for-agent'],
           blockedBy: [1, 2],
         },
@@ -106,7 +121,7 @@ describe.skipIf(!repo)('Tracker contract: GitHub', { timeout: 120_000 }, () => {
       '--title',
       title,
       '--body',
-      'Created by the polesar tracker contract tests; safe to delete.',
+      BODY,
       ...labels.flatMap((label) => ['--label', label])
     );
     const number = Number(url.trim().split('/').pop());

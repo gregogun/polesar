@@ -9,6 +9,8 @@ export type Blocker = {
 export type Ticket = {
   number: number;
   title: string;
+  /** The ticket's description: its spec. */
+  body: string;
   labels: string[];
   /** Every ticket blocking this one, open or closed. */
   blockedBy: Blocker[];
@@ -20,6 +22,9 @@ export type Tracker = {
   openTickets(): Promise<Ticket[]>;
   addLabel(ticket: number, label: string): Promise<void>;
   removeLabel(ticket: number, label: string): Promise<void>;
+  comment(ticket: number, body: string): Promise<void>;
+  /** Closes the ticket; closing one already closed is a no-op. */
+  close(ticket: number): Promise<void>;
 };
 
 /** The tracker couldn't be read or written; the message says what to do next. */

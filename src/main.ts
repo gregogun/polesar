@@ -3,7 +3,11 @@ import { text } from 'node:stream/consumers';
 import { parseArgs, type ParseArgsOptionsConfig } from 'node:util';
 import { preToolUseHook, stopHook, type HookResponse } from './hook.ts';
 import { describeFrontier, findFrontier } from './frontier.ts';
+import type { Executor } from './executor.ts';
+import type { Gate } from './gate.ts';
 import { describeInstall, installHooks } from './install-hooks.ts';
+import { LoopError, planLoop, runLoop } from './loop.ts';
+import { describeOutcome, describePlan, runSummary } from './templates.ts';
 import { TrackerError, type Tracker } from './tracker.ts';
 import { ConfigError, summarise, verify } from './verify.ts';
 
@@ -30,6 +34,23 @@ Commands:
                    --json gives {tickets, humanBlockers}.
                    Exit: 0 listed (even if empty), 1 GitHub couldn't be read,
                    2 bad usage.
+  loop [--dry-run] [--json]
+                   Work the frontier unattended, one ticket at a time: the
+                   implementer commits on polesar/<n> plus an evidence file,
+                   a read-only reviewer judges the ticket, diff, evidence and
+                   standards docs (AGENTS.md, CLAUDE.md, GLOSSARY.md,
+                   docs/adr/), then the gate runs. polesar merges only when
+                   the gate is green, no finding blocks, every commit was
+                   reviewed and the evidence exists, then closes the ticket
+                   with an evidence comment. Other tickets are held, not
+                   merged, and skipped for the rest of the run. Stops when
+                   nothing is left, naming ready-for-human tickets blocking
+                   AFK work. --dry-run shows the planned transitions without
+                   running agents or changing anything. --json gives
+                   {outcomes, humanBlockers} ({planned, humanBlockers} with
+                   --dry-run).
+                   Exit: 0 every ticket merged (or dry run), 1 a ticket was
+                   held or GitHub couldn't be read, 2 bad usage.
   hook pre-tool-use
                    Claude Code PreToolUse hook guarding the trust boundary.
                    Reads the hook payload on stdin and blocks (exit 2, reason
@@ -135,14 +156,18 @@ const writeResult = <T>(
 /** The adapters polesar reaches the outside world through. */
 export type Ports = {
   tracker: () => Promise<Tracker>;
+  executor: () => Promise<Executor>;
+  gate: () => Promise<Gate>;
 };
 
-/** Runs `action`, exiting 1 with the message when the tracker fails. */
-const orExitOnTrackerError = async <T>(action: () => Promise<T>) => {
+/** Runs `action`, exiting 1 with the message when the tracker fails or the loop can't run. */
+const orExitOnPortError = async <T>(action: () => Promise<T>) => {
   try {
     return await action();
   } catch (error) {
-    if (!(error instanceof TrackerError)) throw error;
+    if (!(error instanceof TrackerError || error instanceof LoopError)) {
+      throw error;
+    }
     process.stderr.write(`polesar: ${error.message}\n`);
     process.exit(1);
   }
@@ -163,10 +188,39 @@ export const main = async (argv: string[], ports: Ports) => {
     const { values } = parseCommandArgsOrExit(rest, {
       json: { type: 'boolean' },
     });
-    const result = await orExitOnTrackerError(async () =>
+    const result = await orExitOnPortError(async () =>
       findFrontier(await ports.tracker())
     );
     writeResult(values.json, result, describeFrontier);
+  } else if (command === 'loop') {
+    const { values } = parseCommandArgsOrExit(rest, {
+      'dry-run': { type: 'boolean' },
+      json: { type: 'boolean' },
+    });
+    if (values['dry-run']) {
+      const plan = await orExitOnPortError(async () =>
+        planLoop(await ports.tracker())
+      );
+      writeResult(values.json, plan, describePlan);
+      return;
+    }
+    const result = await orExitOnPortError(async () => {
+      const loopPorts = {
+        tracker: await ports.tracker(),
+        executor: await ports.executor(),
+        gate: await ports.gate(),
+      };
+      return runLoop(loopPorts, {
+        cwd: process.cwd(),
+        onOutcome: (outcome) => {
+          if (!values.json) process.stdout.write(describeOutcome(outcome));
+        },
+      });
+    });
+    writeResult(values.json, result, runSummary);
+    process.exitCode = result.outcomes.every((outcome) => outcome.merged)
+      ? 0
+      : 1;
   } else if (command === 'install-hooks') {
     const { values } = parseCommandArgsOrExit(rest, {
       'dry-run': { type: 'boolean' },
