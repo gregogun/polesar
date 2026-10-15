@@ -8,6 +8,9 @@ import type { RecordedCall } from './recording.ts';
 import { runCli, type CliResult } from './run-cli.ts';
 import type { ScriptedTicket } from './tracker-graph.ts';
 
+/** An agent run that fails in a way polesar can't explain, with what went wrong. */
+export type Failed = { failed: string };
+
 /** How a port behaves for one ticket: the same on every call, or one entry per call with the last repeating. */
 export type Scripted<T> = Partial<T> | Partial<T>[];
 
@@ -18,8 +21,8 @@ export type Scripted<T> = Partial<T> | Partial<T>[];
  */
 export type LoopScript = {
   tickets: ScriptedTicket[];
-  implement?: Record<number, Scripted<Implementation & RateLimited>>;
-  review?: Record<number, Scripted<Review & RateLimited>>;
+  implement?: Record<number, Scripted<Implementation & RateLimited & Failed>>;
+  review?: Record<number, Scripted<Review & RateLimited & Failed>>;
   gate?: Record<number, Scripted<GateResult>>;
   /** Usage readings, one per read, the last repeating. Unscripted: fresh and low. */
   usage?: ScriptedReading | ScriptedReading[];

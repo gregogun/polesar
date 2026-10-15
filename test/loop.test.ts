@@ -605,6 +605,7 @@ describe('polesar loop', () => {
     expect(review?.args).toEqual([
       {
         ticket: { number: 7, title: 'Docs', body: 'Write the docs.' },
+        branch: 'polesar/7',
         diff: '+# Docs',
         evidence: 'measured: pnpm test passed',
         standards: [
@@ -725,7 +726,45 @@ describe('polesar loop', () => {
     });
   });
 
-  it('says what to do when there is no executor yet, before touching any ticket', async () => {
+  it("runs the implementer with the model and effort the ticket's labels ask for", async () => {
+    const result = await runLoop({
+      tickets: [
+        {
+          number: 7,
+          title: 'Docs',
+          labels: ['ready-for-agent', 'model:opus', 'effort:high'],
+        },
+        { number: 8, title: 'Readme', labels: ['ready-for-agent'] },
+      ],
+    });
+
+    expect(result.exitCode).toBe(0);
+    const implementCalls = result.calls.filter(
+      (call) => call.method === 'implement'
+    );
+    expect(implementCalls.map((call) => call.args[0])).toEqual([
+      expect.objectContaining({ model: 'opus', effort: 'high' }),
+      expect.not.objectContaining({ model: expect.anything() }),
+    ]);
+    expect(implementCalls[1]?.args[0]).not.toHaveProperty('effort');
+  });
+
+  it('ignores an effort label Claude Code has no level for', async () => {
+    const result = await runLoop({
+      tickets: [
+        {
+          number: 7,
+          title: 'Docs',
+          labels: ['ready-for-agent', 'effort:extreme'],
+        },
+      ],
+    });
+
+    const implement = result.calls.find((call) => call.method === 'implement');
+    expect(implement?.args[0]).not.toHaveProperty('effort');
+  });
+
+  it('says what to do when there is no gate yet, before touching any ticket', async () => {
     const result = await runCli(
       ['loop'],
       trackerGraph([{ number: 1, title: 'Docs', labels: ['ready-for-agent'] }])
@@ -734,7 +773,7 @@ describe('polesar loop', () => {
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toBe('');
     expect(result.stderr).toBe(
-      'polesar: polesar loop has no executor yet: the Sandcastle adapter is not built (gregogun/polesar#13). Run `polesar loop --dry-run` to see what it would do.\n'
+      'polesar: polesar loop has no gate yet: the CI adapter is not built (gregogun/polesar#12). Run `polesar loop --dry-run` to see what it would do.\n'
     );
   });
 });

@@ -89,7 +89,9 @@ export type Step =
   | { step: 'review'; of: string[]; findings: Finding[] }
   | { step: 'gate' | 'rerun'; result: GateResult }
   /** A rate limit cut the agent run before `before` short; it was redone after `until`. */
-  | { step: 'paused'; until: string; before: 'implement' | 'review' };
+  | { step: 'paused'; until: string; before: 'implement' | 'review' }
+  /** An agent run failed in a way polesar couldn't explain, and the run stopped. */
+  | { step: 'failed'; detail: string; before: 'implement' | 'review' };
 
 const IMPLEMENT_WITH = { review: 'review findings', gate: 'gate failure' };
 
@@ -119,6 +121,9 @@ const describeStep = (step: Step) => {
   }
   if (step.step === 'paused') {
     return `Paused for a rate limit until ${step.until} before ${step.before === 'implement' ? 'implementing' : 'reviewing'}`;
+  }
+  if (step.step === 'failed') {
+    return `Stopped: the ${step.before === 'implement' ? 'implementer' : 'reviewer'} run failed: ${step.detail}`;
   }
   if (step.step === 'review') {
     return `Review of ${step.of.join(', ')}: ${describeFindings(step.findings)}`;
@@ -226,7 +231,9 @@ const describeStopped = (stopped: Stopped) =>
     ? 'loop stopped: nothing left on the frontier'
     : stopped.reason === 'paused'
       ? `loop paused: rate limited until ${stopped.until}. #${stopped.ticket} keeps its place, with no retry used and its labels unchanged: run polesar loop again after then to resume it`
-      : `loop stopped before the next ticket: ${stopped.detail}`;
+      : stopped.reason === 'failed'
+        ? `loop stopped: an agent run failed on #${stopped.ticket}: ${stopped.detail}. #${stopped.ticket} keeps its place, with no retry used and its labels unchanged: run polesar loop again to resume it`
+        : `loop stopped before the next ticket: ${stopped.detail}`;
 
 export const runSummary = ({
   outcomes,

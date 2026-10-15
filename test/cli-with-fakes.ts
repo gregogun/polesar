@@ -1,8 +1,11 @@
+import type { Executor } from '../src/executor.ts';
+import type { Gate } from '../src/gate.ts';
 import { GitHubTracker } from '../src/github-tracker.ts';
 import { unavailable } from '../src/loop.ts';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { main } from '../src/main.ts';
+import { SandcastleExecutor } from '../src/sandcastle-executor.ts';
 import { FileUsage } from '../src/usage.ts';
 import { loadFakeLoop } from './fake-loop.ts';
 import { loadFakeTracker } from './fake-tracker.ts';
@@ -35,8 +38,11 @@ const now = () =>
 
 // Loaded once, on first use, so the executor and gate share one scripted branch state.
 let loop: ReturnType<typeof loadFakeLoop> | undefined;
-const fakeLoopPort = async <K extends 'executor' | 'gate'>(port: K) => {
-  if (!POLESAR_LOOP_FAKE) return unavailable[port]();
+const fakeLoopPort = async <K extends 'executor' | 'gate'>(
+  port: K,
+  real: () => Promise<{ executor: Executor; gate: Gate }[K]>
+): Promise<{ executor: Executor; gate: Gate }[K]> => {
+  if (!POLESAR_LOOP_FAKE) return real();
   loop ??= loadFakeLoop(POLESAR_LOOP_FAKE, POLESAR_FAKE_STATE);
   return recording(port, (await loop)[port], POLESAR_FAKE_LOG);
 };
@@ -50,8 +56,11 @@ await main(process.argv.slice(2), {
           POLESAR_FAKE_LOG
         )
       : new GitHubTracker(),
-  executor: () => fakeLoopPort('executor'),
-  gate: () => fakeLoopPort('gate'),
+  executor: () =>
+    fakeLoopPort('executor', () =>
+      SandcastleExecutor.create(process.cwd(), home)
+    ),
+  gate: () => fakeLoopPort('gate', unavailable.gate),
   usage: async () =>
     POLESAR_USAGE_FAKE
       ? recording(

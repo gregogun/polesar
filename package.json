@@ -39,5 +39,8 @@
   },
   "engines": {
     "node": ">=22.18"
+  },
+  "dependencies": {
+    "@ai-hero/sandcastle": "0.12.0"
   }
 }

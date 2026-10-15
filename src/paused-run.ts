@@ -1,6 +1,7 @@
 /**
- * A run paused by a rate limit, saved in polesar's home so the next run in the
- * same repo picks its ticket up where it stopped, retries and turns intact.
+ * A run paused by a rate limit or stopped by a failed agent run, saved in
+ * polesar's home so the next run in the same repo picks its ticket up where it
+ * stopped, retries and turns intact.
  */
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
@@ -38,7 +39,7 @@ export type TicketState = {
 
 export type PausedRun = {
   ticket: number;
-  /** ISO time the rate limit resets; the run can't resume before. */
+  /** ISO time the rate limit resets (or the run failed); the run can't resume before. */
   until: string;
   state: TicketState;
   /** The paused run's spend, so resuming doesn't hand it a fresh run cap. */
@@ -52,16 +53,15 @@ const isPausedRun = (value: unknown): value is PausedRun =>
   isRecord(value.state) &&
   isRecord(value.spend);
 
+/** A file name for the repo checked out at `cwd`, to keep its files apart in polesar's home. */
+export const repoKey = (cwd: string) => cwd.replaceAll(/[^A-Za-z0-9]/g, '-');
+
 /** The paused run for the repo at `cwd`, if there is one. */
 export class PausedRuns {
   readonly #file: string;
 
   constructor(home: string, cwd: string) {
-    this.#file = path.join(
-      home,
-      'paused',
-      `${cwd.replaceAll(/[^A-Za-z0-9]/g, '-')}.json`
-    );
+    this.#file = path.join(home, 'paused', `${repoKey(cwd)}.json`);
   }
 
   async load(): Promise<PausedRun | undefined> {
