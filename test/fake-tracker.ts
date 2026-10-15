@@ -5,7 +5,7 @@ import {
   type Ticket,
   type Tracker,
 } from '../src/tracker.ts';
-import { isRecord } from '../src/verify.ts';
+import { isRecord } from '../src/config.ts';
 import type { ExternalBlocker, ScriptedTicket } from './tracker-graph.ts';
 
 /** An in-memory tracker holding a scripted issue graph: tickets, labels and blocking edges. */

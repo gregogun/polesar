@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { ConfigError, exists, isRecord } from './verify.ts';
+import { ConfigError, exists, isRecord } from './config.ts';
 
 const SETTINGS_FILE = path.join('.claude', 'settings.json');
 

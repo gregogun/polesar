@@ -15,6 +15,11 @@ import {
 } from './frontier.ts';
 import type { Gate, GateResult } from './gate.ts';
 import {
+  loadProtectedPaths,
+  protectedChanges,
+  type ProtectedChange,
+} from './protected-paths.ts';
+import {
   escalationComment,
   evidenceComment,
   prBody,
@@ -63,20 +68,23 @@ const blockingFindings = (findings: Finding[]) =>
     .map((finding) => `blocking review finding: ${finding.summary}`);
 
 /**
- * The merge condition (must-pass #1): why the branch can't merge, or nothing
- * when the gate is green, nothing blocks, every commit on it was reviewed and
- * the evidence file exists.
+ * The merge condition (must-pass #1 and #2): why the branch can't merge, or
+ * nothing when the gate is green, nothing blocks, every commit on it was
+ * reviewed, the evidence file exists and no protected file was modified or
+ * deleted.
  */
 const mergeBlockers = ({
   gate,
   findings,
   reviewed,
   evidence,
+  touched,
 }: {
   gate: GateResult;
   findings: Finding[];
   reviewed: string[];
   evidence: string | null;
+  touched: ProtectedChange[];
 }): string[] => {
   const unreviewed = gate.commits.filter(
     (commit) => !reviewed.includes(commit)
@@ -89,6 +97,11 @@ const mergeBlockers = ({
       ? [`unreviewed commits: ${unreviewed.join(', ')}`]
       : []),
     ...(hasEvidence(evidence) ? [] : ['no evidence file']),
+    ...(touched.length > 0
+      ? [
+          `protected paths changed: ${touched.map((change) => change.path).join(', ')}`,
+        ]
+      : []),
   ];
 };
 
@@ -121,6 +134,9 @@ const readStandards = async (cwd: string): Promise<StandardsDoc[]> => {
   );
   return docs.filter((doc): doc is StandardsDoc => doc.content !== undefined);
 };
+
+/** What the loop holds every ticket to, read once per run from the main checkout. */
+type Policy = { standards: StandardsDoc[]; protectedPaths: string[] };
 
 const sameCommits = (a: string[], b: string[]) =>
   a.length === b.length && a.every((commit, index) => commit === b[index]);
@@ -155,7 +171,7 @@ const escalate = async (
  */
 const workTicket = async (
   { tracker, executor, gate }: LoopPorts,
-  standards: StandardsDoc[],
+  { standards, protectedPaths }: Policy,
   { number, title, body }: Ticket
 ): Promise<Outcome> => {
   const ticket: TicketSpec = { number, title, body };
@@ -168,10 +184,14 @@ const workTicket = async (
   const nonBlocking: string[] = [];
   /** The latest evidence file there was, for the trail even if a retry dropped it. */
   let lastEvidence: string | null = null;
+  /** Protected files the branch, as it last stood, modified or deleted: named on any escalation. */
+  let touched: ProtectedChange[] = [];
   const stop = async (reasons: string[]): Promise<Outcome> => {
     await escalate(tracker, number, {
+      ticket: number,
       branch,
       reasons,
+      touched,
       trail,
       evidence: lastEvidence,
     });
@@ -194,8 +214,9 @@ const workTicket = async (
       branch,
       ...(feedback && { feedback }),
     });
-    const { commits, diff, evidence } = implementation;
+    const { commits, diff, changes, evidence } = implementation;
     if (hasEvidence(evidence)) lastEvidence = evidence;
+    touched = protectedChanges(changes, protectedPaths);
     const committed = commits.filter((commit) => !reviewed.includes(commit));
     trail.push({
       step: 'implement',
@@ -269,6 +290,7 @@ const workTicket = async (
       findings,
       reviewed,
       evidence,
+      touched,
     });
     if (blockers.length > 0) return stop(blockers);
     await gate.merge({ ticket: number, branch });
@@ -290,14 +312,17 @@ const workTicket = async (
 
 /**
  * Works the frontier one ticket at a time until nothing is left on it, taking
- * each ticket at most once per run. Standards docs are read from `cwd`;
- * `onOutcome` hears about each ticket as it finishes.
+ * each ticket at most once per run. Standards docs and protected paths are
+ * read from `cwd`; `onOutcome` hears about each ticket as it finishes.
  */
 export const runLoop = async (
   ports: LoopPorts,
   { cwd, onOutcome }: { cwd: string; onOutcome: (outcome: Outcome) => void }
 ): Promise<LoopResult> => {
-  const standards = await readStandards(cwd);
+  const policy: Policy = {
+    standards: await readStandards(cwd),
+    protectedPaths: await loadProtectedPaths(cwd),
+  };
   const outcomes: Outcome[] = [];
   const tried = new Set<number>();
   for (;;) {
@@ -307,7 +332,7 @@ export const runLoop = async (
     const ticket = open.find(({ number }) => number === next?.number);
     if (ticket === undefined) return { outcomes, humanBlockers };
     tried.add(ticket.number);
-    const outcome = await workTicket(ports, standards, ticket);
+    const outcome = await workTicket(ports, policy, ticket);
     outcomes.push(outcome);
     onOutcome(outcome);
   }

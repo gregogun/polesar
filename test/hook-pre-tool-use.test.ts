@@ -271,6 +271,33 @@ describe('polesar hook pre-tool-use: accepting decisions', () => {
   });
 });
 
+describe('polesar hook pre-tool-use: recording verdicts', () => {
+  it('blocks polesar verdict and says to leave it to the user', async () => {
+    const result = await expectBlocked(
+      bash('polesar verdict 7 approved'),
+      /^polesar: blocked/
+    );
+    expect(result.stderr).toContain('polesar verdict');
+    expect(result.stderr).toMatch(/ask the user/i);
+  });
+
+  it.each([
+    'node src/cli.ts verdict 7 rejected',
+    'pnpm exec polesar verdict --json 7 approved',
+    'npx polesar verdict 7 approved --dry-run',
+  ])('blocks the equivalent form: %s', async (command) => {
+    await expectBlocked(bash(command), /polesar verdict/);
+  });
+
+  it.each([
+    'polesar verdict --help',
+    'echo "run polesar verdict 7 approved"',
+    'grep -r verdict src',
+  ])('allows commands that only mention it: %s', async (command) => {
+    await expectAllowed(bash(command));
+  });
+});
+
 describe('polesar hook pre-tool-use: failing closed', () => {
   it.each([
     ['empty stdin', ''],

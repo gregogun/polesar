@@ -10,6 +10,8 @@ import {
 } from './frontier.ts';
 import type { Finding } from './executor.ts';
 import type { GateResult } from './gate.ts';
+import type { ProtectedChange } from './protected-paths.ts';
+import type { EscalationVerdict, VerdictResult } from './verdict.ts';
 
 type Merged = {
   branch: string;
@@ -120,14 +122,35 @@ const describeStep = (step: Step) => {
   return `${label} on ${commits.join(', ') || 'no commits'}: ${green ? 'green' : 'red'}: ${summary}`;
 };
 
+/** The protected files an escalation names, and how to record a verdict on it for telemetry. */
+const describeTouched = (ticket: number, touched: ProtectedChange[]) =>
+  touched.length === 0
+    ? []
+    : [
+        '## Protected paths changed',
+        '',
+        ...touched.map(
+          ({ path, change, pattern }) =>
+            `- \`${path}\` (${change}; matches \`${pattern}\`)`
+        ),
+        '',
+        `Record your verdict on this escalation with \`polesar verdict ${ticket} approved\` or \`polesar verdict ${ticket} rejected\`.`,
+        '',
+      ];
+
 export const escalationComment = ({
+  ticket,
   branch,
   reasons,
+  touched,
   trail,
   evidence,
 }: {
+  ticket: number;
   branch: string;
   reasons: string[];
+  /** Protected files the branch modified or deleted; empty unless that's why it escalated. */
+  touched: ProtectedChange[];
   trail: Step[];
   evidence: string | null;
 }) =>
@@ -138,6 +161,7 @@ export const escalationComment = ({
     '',
     `Branch: \`${branch}\``,
     '',
+    ...describeTouched(ticket, touched),
     '## Trail',
     '',
     ...trail.map((step, index) => `${index + 1}. ${describeStep(step)}`),
@@ -147,6 +171,19 @@ export const escalationComment = ({
     evidence ?? '_No evidence file._',
     '',
   ].join('\n');
+
+/** Your verdict on an escalation; the first line is what telemetry reads. */
+export const verdictComment = (verdict: EscalationVerdict) =>
+  `polesar verdict: ${verdict}\n\nRecorded against polesar's latest escalation of this ticket, for telemetry.\n`;
+
+export const describeVerdict = ({
+  ticket,
+  verdict,
+  recorded,
+}: VerdictResult) =>
+  recorded
+    ? `#${ticket}: recorded verdict ${verdict}\n`
+    : `#${ticket}: would record verdict ${verdict}. Nothing was changed.\n`;
 
 /** What happened to one ticket in a run. */
 export type Outcome = {

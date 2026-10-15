@@ -42,6 +42,23 @@ Lists the frontier: the open `ready-for-agent` tickets whose blockers are all cl
 
 The Tracker contract tests check the GitHub adapter against the fake tracker used in tests. They're opt-in and need a throwaway repo you can create and delete issues in: `POLESAR_CONTRACT_REPO=you/scratch-repo pnpm vitest run test/tracker-contract.test.ts`.
 
+### Protected paths
+
+`polesar loop` escalates a ticket to `ready-for-human`, even with a green gate and a clean review, when its branch modifies or deletes a protected file: an existing test, verify, lint, format or typecheck config, hook config or a CI workflow ([ADR 0005](docs/adr/0005-protected-paths-escalate-even-when-green.md)). Adding files, new tests included, never escalates. The escalation comment names each protected file touched and the pattern it matched. The default patterns are in [`src/protected-paths.ts`](src/protected-paths.ts). A repo can add patterns, or remove defaults, in `polesar.json`:
+
+```json
+{
+  "protectedPaths": {
+    "add": ["src/policy/**"],
+    "remove": ["**/tsconfig*.json"]
+  }
+}
+```
+
+`*` and `?` match within one path segment and `**` matches across segments. Removing a pattern that isn't a default is a config error, so a typo can't fail silently.
+
+Once you've looked at an escalation, record your verdict with `polesar verdict <ticket> approved|rejected`: approved if the held-back change was fine to merge. It's posted as a comment on the ticket for telemetry, so rules can be relaxed on evidence. `--dry-run` and `--json` work as for the other commands.
+
 ### Hooks
 
 `polesar install-hooks` adds polesar's Claude Code hooks to `.claude/settings.json` at the repo root, keeping any settings already there. A polesar hook installed with a different command is replaced rather than duplicated, so rerunning it changes nothing. `--dry-run` shows what it would change, `--json` reports each hook's status (`added`, `updated` or `present`), and `--command` changes how the hooks run polesar (default: `polesar`, which must be on `PATH`).
@@ -51,7 +68,7 @@ The Tracker contract tests check the GitHub adapter against the fake tracker use
 - adding the `ready-for-agent` label (`gh issue edit --add-label`, `gh issue create --label`, `gh api` or `curl` label writes, MCP tools with a `labels` input)
 - skipping pre-commit hooks (`git commit --no-verify` / `-n`, `LEFTHOOK=0` / `HUSKY=0`, or changing `core.hooksPath`)
 - posting commit statuses or check runs (`gh api`, `curl`, MCP tools)
-- `polesar decide accept`
+- `polesar decide accept` and `polesar verdict`
 
 It checks Bash commands and MCP tool calls. It fails closed. A payload it can't read, an error, or polesar missing from `PATH` all block the call. It reads commands the way a shell would, through quoting, chaining, `$(...)`, `sh -c` and wrappers like `sudo`. It is a guard against shortcuts, not a sandbox: a command hidden in a variable or a script file, another HTTP client, or edits to `.git/` or `.claude/settings.json` get past it.
 

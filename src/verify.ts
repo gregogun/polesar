@@ -1,8 +1,15 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { access, mkdtemp, open, readFile } from 'node:fs/promises';
+import { mkdtemp, open, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
+import {
+  CONFIG_EXAMPLE,
+  ConfigError,
+  findConfig,
+  isRecord,
+  readConfig,
+} from './config.ts';
 
 /** Failure output beyond this many lines is left to the full log. */
 const EXCERPT_LINES = 20;
@@ -17,59 +24,6 @@ type CheckResult = Check & {
   /** Path to the check's full stdout and stderr. */
   log: string;
 };
-
-const CONFIG_FILE = 'polesar.json';
-
-const CONFIG_EXAMPLE = `{
-  "verify": {
-    "checks": {
-      "typecheck": "pnpm tsc --noEmit",
-      "lint": "pnpm eslint ."
-    }
-  }
-}`;
-
-/** The repo's polesar config is missing or malformed; the message says how to fix it. */
-export class ConfigError extends Error {
-  override name = 'ConfigError';
-}
-
-/** The repo has no polesar config at all. */
-export class MissingConfigError extends ConfigError {
-  override name = 'MissingConfigError';
-}
-
-export const exists = (file: string) =>
-  access(file).then(
-    () => true,
-    () => false
-  );
-
-/** The nearest polesar.json from `cwd` up to its git root (or the filesystem root outside git). */
-const findConfig = async (cwd: string): Promise<string> => {
-  for (let dir = path.resolve(cwd); ; dir = path.dirname(dir)) {
-    const file = path.join(dir, CONFIG_FILE);
-    if (await exists(file)) return file;
-    if ((await exists(path.join(dir, '.git'))) || path.dirname(dir) === dir) {
-      throw new MissingConfigError(
-        `no ${CONFIG_FILE} in ${cwd} or its parents up to ${dir}. Create one at the repo root listing the cheap checks to run, e.g.:\n${CONFIG_EXAMPLE}`
-      );
-    }
-  }
-};
-
-const readConfig = async (file: string): Promise<unknown> => {
-  const text = await readFile(file, 'utf8');
-  try {
-    return JSON.parse(text);
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new ConfigError(`${file} is not valid JSON: ${reason}`);
-  }
-};
-
-export const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const loadChecks = async (file: string): Promise<Check[]> => {
   const config = await readConfig(file);

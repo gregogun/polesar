@@ -30,15 +30,15 @@ type LoopResult = CliResult & {
   calls: RecordedCall[];
 };
 
-/** Runs `polesar loop` against fakes scripted by `script`, returning what the ports were asked to do. */
-export const runLoop = async (
+/** Runs polesar with `args` against fakes scripted by `script`, returning what the ports were asked to do. */
+export const runWithFakes = async (
+  args: string[],
   script: LoopScript,
-  args: string[] = [],
   files: Record<string, string> = {}
 ): Promise<LoopResult> => {
   const dir = await mkdtemp(path.join(tmpdir(), 'polesar-loop-'));
   try {
-    const result = await runCli(['loop', ...args], {
+    const result = await runCli(args, {
       dir,
       files: { ...files, [SCRIPT_FILE]: JSON.stringify(script) },
       env: {
@@ -59,6 +59,13 @@ export const runLoop = async (
     await rm(dir, { recursive: true, force: true });
   }
 };
+
+/** Runs `polesar loop` against fakes scripted by `script`, returning what the ports were asked to do. */
+export const runLoop = (
+  script: LoopScript,
+  args: string[] = [],
+  files: Record<string, string> = {}
+) => runWithFakes(['loop', ...args], script, files);
 
 /** The calls that changed something: everything but tracker reads. */
 export const writes = (calls: RecordedCall[]) =>

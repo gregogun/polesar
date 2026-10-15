@@ -1,10 +1,6 @@
 import { checkBash, checkMcpTool, type Verdict } from './guard.ts';
-import {
-  ConfigError,
-  MissingConfigError,
-  summarise,
-  verify,
-} from './verify.ts';
+import { ConfigError, MissingConfigError } from './config.ts';
+import { summarise, verify } from './verify.ts';
 
 /** What a Claude Code hook command writes and exits with. */
 export type HookResponse = { exitCode: number; stdout: string; stderr: string };
