@@ -39,18 +39,26 @@ Commands:
                    implementer commits on polesar/<n> plus an evidence file,
                    a read-only reviewer judges the ticket, diff, evidence and
                    standards docs (AGENTS.md, CLAUDE.md, GLOSSARY.md,
-                   docs/adr/), then the gate runs. polesar merges only when
-                   the gate is green, no finding blocks, every commit was
-                   reviewed and the evidence exists, then closes the ticket
-                   with an evidence comment. Other tickets are held, not
-                   merged, and skipped for the rest of the run. Stops when
-                   nothing is left, naming ready-for-human tickets blocking
-                   AFK work. --dry-run shows the planned transitions without
-                   running agents or changing anything. --json gives
+                   docs/adr/), then the gate runs. Blocking findings go back
+                   to the implementer (1 review retry, shared with reviews of
+                   later fixes). A red gate is rerun once with no agent; green
+                   with no code change is logged as a flaky gate. Still red,
+                   it goes back to the implementer with the failure summary
+                   (2 CI retries), and only the new change is reviewed.
+                   Non-blocking findings go in the PR body and the log.
+                   polesar merges only when the gate is green, no finding
+                   blocks, every commit was reviewed and the evidence exists,
+                   then closes the ticket with an evidence comment. Anything
+                   else (no commits, no evidence, a budget used up) escalates:
+                   the ticket is relabelled ready-for-human with a comment
+                   giving the trail. The loop never applies ready-for-agent.
+                   Stops when nothing is left, naming ready-for-human tickets
+                   blocking AFK work. --dry-run shows the planned transitions
+                   without running agents or changing anything. --json gives
                    {outcomes, humanBlockers} ({planned, humanBlockers} with
                    --dry-run).
                    Exit: 0 every ticket merged (or dry run), 1 a ticket was
-                   held or GitHub couldn't be read, 2 bad usage.
+                   escalated or GitHub couldn't be read, 2 bad usage.
   hook pre-tool-use
                    Claude Code PreToolUse hook guarding the trust boundary.
                    Reads the hook payload on stdin and blocks (exit 2, reason

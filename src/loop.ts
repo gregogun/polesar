@@ -2,17 +2,25 @@ import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type {
   Executor,
+  Feedback,
   Finding,
   StandardsDoc,
   TicketSpec,
 } from './executor.ts';
-import { frontierOf, type HumanBlocker } from './frontier.ts';
+import {
+  frontierOf,
+  READY_FOR_AGENT,
+  READY_FOR_HUMAN,
+  type HumanBlocker,
+} from './frontier.ts';
 import type { Gate, GateResult } from './gate.ts';
 import {
+  escalationComment,
   evidenceComment,
   prBody,
   type Outcome,
   type Plan,
+  type Step,
 } from './templates.ts';
 import type { Ticket, Tracker } from './tracker.ts';
 
@@ -114,9 +122,37 @@ const readStandards = async (cwd: string): Promise<StandardsDoc[]> => {
   return docs.filter((doc): doc is StandardsDoc => doc.content !== undefined);
 };
 
+const sameCommits = (a: string[], b: string[]) =>
+  a.length === b.length && a.every((commit, index) => commit === b[index]);
+
 const branchFor = (ticket: number) => `polesar/${ticket}`;
 
-/** Takes one ticket through implement, review and gate, merging only when the merge condition holds. */
+/** How many times blocking findings may send work back to the implementer, counting reviews of fixes. */
+const REVIEW_RETRIES = 1;
+
+/** How many times a gate still red after its free rerun may send work back to the implementer. */
+const CI_RETRIES = 2;
+
+/**
+ * Downgrades the ticket to ready-for-human with the full trail. ready-for-human
+ * goes on first, so a run cut short leaves the ticket off the frontier. The
+ * loop never applies ready-for-agent.
+ */
+const escalate = async (
+  tracker: Tracker,
+  ticket: number,
+  comment: Parameters<typeof escalationComment>[0]
+) => {
+  await tracker.addLabel(ticket, READY_FOR_HUMAN);
+  await tracker.removeLabel(ticket, READY_FOR_AGENT);
+  await tracker.comment(ticket, escalationComment(comment));
+};
+
+/**
+ * Takes one ticket through implement, review and gate, sending failures back
+ * to the implementer while budget lasts. Merges only when the merge condition
+ * holds; escalates otherwise.
+ */
 const workTicket = async (
   { tracker, executor, gate }: LoopPorts,
   standards: StandardsDoc[],
@@ -124,44 +160,132 @@ const workTicket = async (
 ): Promise<Outcome> => {
   const ticket: TicketSpec = { number, title, body };
   const branch = branchFor(number);
-  const hold = (held: string[]) => ({ number, title, merged: false, held });
-  const implementation = await executor.implement({ ticket, branch });
-  const { commits, diff, evidence } = implementation;
-  if (commits.length === 0) return hold(['no commits']);
-  if (!hasEvidence(evidence)) return hold(['no evidence file']);
-  const { findings } = await executor.review({
-    ticket,
-    diff,
-    evidence,
-    standards,
-  });
-  const blocking = blockingFindings(findings);
-  if (blocking.length > 0) return hold(blocking);
-  const checked = await gate.check({
-    ticket: { number, title },
-    branch,
-    prBody: prBody({ ticket: number, evidence }),
-  });
-  // The whole condition again, on what the gate ran: merging is one checked condition, whatever led here.
-  const held = mergeBlockers({
-    gate: checked,
-    findings,
-    reviewed: commits,
-    evidence,
-  });
-  if (held.length > 0) return hold(held);
-  await gate.merge({ ticket: number, branch });
-  await tracker.comment(
-    number,
-    evidenceComment({
+  const trail: Step[] = [];
+  const reviewed: string[] = [];
+  /** Red gate summaries that turned green on a rerun with no code change: the gate's fault, not the agent's. */
+  const flaky: string[] = [];
+  /** Every review's non-blocking findings: posted and logged, never blocking. */
+  const nonBlocking: string[] = [];
+  /** The latest evidence file there was, for the trail even if a retry dropped it. */
+  let lastEvidence: string | null = null;
+  const stop = async (reasons: string[]): Promise<Outcome> => {
+    await escalate(tracker, number, {
       branch,
+      reasons,
+      trail,
+      evidence: lastEvidence,
+    });
+    return {
+      number,
+      title,
+      merged: false,
+      escalated: reasons,
+      nonBlocking,
+      flaky,
+    };
+  };
+  let feedback: Feedback | undefined;
+  let addressing: Finding[] = [];
+  let reviewRetries = 0;
+  let ciRetries = 0;
+  for (;;) {
+    const implementation = await executor.implement({
+      ticket,
+      branch,
+      ...(feedback && { feedback }),
+    });
+    const { commits, diff, evidence } = implementation;
+    if (hasEvidence(evidence)) lastEvidence = evidence;
+    const committed = commits.filter((commit) => !reviewed.includes(commit));
+    trail.push({
+      step: 'implement',
+      ...(feedback && { feedback: 'review' in feedback ? 'review' : 'gate' }),
+      committed,
+    });
+    if (committed.length === 0) {
+      return stop([feedback ? 'no new commits' : 'no commits']);
+    }
+    if (!hasEvidence(evidence)) return stop(['no evidence file']);
+    const { findings } = await executor.review({
+      ticket,
+      diff,
       evidence,
-      gateSummary: checked.summary,
-      reviewed: commits,
-    })
-  );
-  await tracker.close(number);
-  return { number, title, merged: true, held: [] };
+      standards,
+      addressing,
+    });
+    reviewed.push(...committed);
+    trail.push({ step: 'review', of: committed, findings });
+    const blocking = findings.filter((finding) => finding.blocking);
+    nonBlocking.push(
+      ...findings
+        .filter((finding) => !finding.blocking)
+        .map((finding) => finding.summary)
+    );
+    if (blocking.length > 0) {
+      if (reviewRetries === REVIEW_RETRIES) {
+        return stop([
+          `review retries used up (${reviewRetries} of ${REVIEW_RETRIES})`,
+          ...blockingFindings(findings),
+        ]);
+      }
+      reviewRetries++;
+      feedback = { review: blocking };
+      addressing = blocking;
+      continue;
+    }
+    let checked = await gate.check({
+      ticket: { number, title },
+      branch,
+      prBody: prBody({ ticket: number, evidence, nonBlocking }),
+    });
+    trail.push({ step: 'gate', result: checked });
+    if (!checked.green) {
+      // A free rerun first: a flaky gate shouldn't cost tokens or a CI retry.
+      const rerun = await gate.rerun({ ticket: number, branch });
+      trail.push({ step: 'rerun', result: rerun });
+      if (!sameCommits(rerun.commits, checked.commits)) {
+        return stop([
+          `gate rerun ran on ${rerun.commits.join(', ') || 'no commits'}, not ${checked.commits.join(', ')}`,
+        ]);
+      }
+      if (rerun.green) flaky.push(checked.summary);
+      checked = rerun;
+      if (!checked.green) {
+        if (ciRetries === CI_RETRIES) {
+          return stop([
+            `CI retries used up (${ciRetries} of ${CI_RETRIES})`,
+            `gate red: ${checked.summary}`,
+          ]);
+        }
+        ciRetries++;
+        feedback = { gate: checked.summary };
+        addressing = [];
+        continue;
+      }
+    }
+    // The whole condition again, on what the gate ran: merging is one checked condition, whatever led here.
+    const blockers = mergeBlockers({
+      gate: checked,
+      findings,
+      reviewed,
+      evidence,
+    });
+    if (blockers.length > 0) return stop(blockers);
+    await gate.merge({ ticket: number, branch });
+    await tracker.comment(
+      number,
+      evidenceComment({
+        branch,
+        evidence,
+        gateSummary: checked.summary,
+        reviewed,
+        nonBlocking,
+        flaky,
+      })
+    );
+    await tracker.close(number);
+    return { number, title, merged: true, escalated: [], nonBlocking, flaky };
+  }
 };
 
 /**
