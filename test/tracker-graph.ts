@@ -1,6 +1,8 @@
 export type ScriptedTicket = {
   number: number;
   title: string;
+  /** Defaults to empty. */
+  body?: string;
   /** Defaults to open. */
   state?: 'open' | 'closed';
   labels?: string[];

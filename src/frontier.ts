@@ -5,7 +5,7 @@ const READY_FOR_HUMAN = 'ready-for-human';
 
 type FrontierTicket = { number: number; title: string };
 
-type HumanBlocker = FrontierTicket & {
+export type HumanBlocker = FrontierTicket & {
   /** How many more AFK tickets the loop could finish on its own once this one closes. */
   unblocks: number;
   /** How many open AFK tickets wait on it, directly or through other open tickets. */
@@ -14,7 +14,7 @@ type HumanBlocker = FrontierTicket & {
   blockedBy: Omit<Blocker, 'open'>[];
 };
 
-type Frontier = {
+export type Frontier = {
   /** Open ready-for-agent tickets with every blocker closed: what the loop may work. */
   tickets: FrontierTicket[];
   /** Open ready-for-human tickets that AFK work is waiting on. */
@@ -85,8 +85,8 @@ const loopReach = (open: Ticket[], closed?: number) => {
   return reached.size;
 };
 
-export const findFrontier = async (tracker: Tracker): Promise<Frontier> => {
-  const open = await tracker.openTickets();
+/** The frontier among the tracker's open tickets. */
+export const frontierOf = (open: Ticket[]): Frontier => {
   const tickets = open
     .filter((ticket) => isAfk(ticket) && openBlockers(ticket).length === 0)
     .map(({ number, title }) => ({ number, title }));
@@ -107,7 +107,10 @@ export const findFrontier = async (tracker: Tracker): Promise<Frontier> => {
   return { tickets, humanBlockers };
 };
 
-const plural = (count: number, noun: string) =>
+export const findFrontier = async (tracker: Tracker): Promise<Frontier> =>
+  frontierOf(await tracker.openTickets());
+
+export const plural = (count: number, noun: string) =>
   `${count} ${noun}${count === 1 ? '' : 's'}`;
 
 const describeHumanBlocker = ({
@@ -139,12 +142,15 @@ export const describeFrontier = ({
     `frontier: ${plural(tickets.length, 'ticket')}`,
     ...tickets.map((ticket) => `  #${ticket.number} ${ticket.title}`),
   ];
-  if (humanBlockers.length > 0) {
-    lines.push(
-      '',
-      'ready-for-human tickets blocking AFK work:',
-      ...humanBlockers.map(describeHumanBlocker)
-    );
-  }
-  return `${lines.join('\n')}\n`;
+  return `${[...lines, ...describeHumanBlockers(humanBlockers)].join('\n')}\n`;
 };
+
+/** Lines naming the ready-for-human tickets holding AFK work up; none when there are none. */
+export const describeHumanBlockers = (humanBlockers: HumanBlocker[]) =>
+  humanBlockers.length === 0
+    ? []
+    : [
+        '',
+        'ready-for-human tickets blocking AFK work:',
+        ...humanBlockers.map(describeHumanBlocker),
+      ];

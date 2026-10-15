@@ -16,6 +16,7 @@ export class FakeTracker implements Tracker {
     for (const ticket of tickets) {
       this.#tickets.set(ticket.number, {
         state: 'open',
+        body: '',
         ...ticket,
         labels: [...(ticket.labels ?? [])],
         blockedBy: [...(ticket.blockedBy ?? [])],
@@ -27,9 +28,10 @@ export class FakeTracker implements Tracker {
     const open = [...this.#tickets.values()]
       .filter((ticket) => ticket.state === 'open')
       .sort((a, b) => a.number - b.number)
-      .map(({ number, title, labels, blockedBy }) => ({
+      .map(({ number, title, body, labels, blockedBy }) => ({
         number,
         title,
+        body,
         labels: [...labels],
         blockedBy: blockedBy.map((blocker) => this.#blocker(blocker)),
       }));
@@ -45,6 +47,16 @@ export class FakeTracker implements Tracker {
   removeLabel(ticket: number, label: string): Promise<void> {
     const found = this.#ticket(ticket);
     found.labels = found.labels.filter((existing) => existing !== label);
+    return Promise.resolve();
+  }
+
+  comment(ticket: number, _body: string): Promise<void> {
+    this.#ticket(ticket);
+    return Promise.resolve();
+  }
+
+  close(ticket: number): Promise<void> {
+    this.#ticket(ticket).state = 'closed';
     return Promise.resolve();
   }
 
@@ -78,6 +90,7 @@ const isScriptedTicket = (value: unknown): value is ScriptedTicket =>
   isRecord(value) &&
   typeof value.number === 'number' &&
   typeof value.title === 'string' &&
+  (value.body === undefined || typeof value.body === 'string') &&
   (value.state === undefined || isState(value.state)) &&
   (value.labels === undefined ||
     (Array.isArray(value.labels) &&
@@ -100,7 +113,7 @@ export const loadFakeTracker = async (file: string): Promise<FakeTracker> => {
   const invalid = graph.tickets.find((ticket) => !isScriptedTicket(ticket));
   if (invalid !== undefined) {
     throw new TrackerError(
-      `fake tracker ticket must be {number, title, state?, labels?, blockedBy?}, got ${JSON.stringify(invalid)}`
+      `fake tracker ticket must be {number, title, body?, state?, labels?, blockedBy?}, got ${JSON.stringify(invalid)}`
     );
   }
   return new FakeTracker(graph.tickets as ScriptedTicket[]);
