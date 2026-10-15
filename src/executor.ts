@@ -1,7 +1,7 @@
 /** What an agent is given about the ticket it works or judges. */
 export type TicketSpec = { number: number; title: string; body: string };
 
-type ImplementInput = { ticket: TicketSpec; branch: string };
+export type ImplementInput = { ticket: TicketSpec; branch: string };
 
 export type Implementation = {
   /** The commits on the branch, oldest first. */

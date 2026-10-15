@@ -45,6 +45,10 @@ export const unavailable = {
     ),
 };
 
+/** An evidence file that's missing or blank proves nothing. */
+const hasEvidence = (evidence: string | null): evidence is string =>
+  evidence !== null && evidence.trim() !== '';
+
 const blockingFindings = (findings: Finding[]) =>
   findings
     .filter((finding) => finding.blocking)
@@ -71,11 +75,12 @@ const mergeBlockers = ({
   );
   return [
     ...(gate.green ? [] : [`gate red: ${gate.summary}`]),
+    ...(gate.commits.length === 0 ? ['gate reported no commits'] : []),
     ...blockingFindings(findings),
     ...(unreviewed.length > 0
       ? [`unreviewed commits: ${unreviewed.join(', ')}`]
       : []),
-    ...(evidence === null ? ['no evidence file'] : []),
+    ...(hasEvidence(evidence) ? [] : ['no evidence file']),
   ];
 };
 
@@ -112,7 +117,7 @@ const readStandards = async (cwd: string): Promise<StandardsDoc[]> => {
 const branchFor = (ticket: number) => `polesar/${ticket}`;
 
 /** Takes one ticket through implement, review and gate, merging only when the merge condition holds. */
-const work = async (
+const workTicket = async (
   { tracker, executor, gate }: LoopPorts,
   standards: StandardsDoc[],
   { number, title, body }: Ticket
@@ -123,7 +128,7 @@ const work = async (
   const implementation = await executor.implement({ ticket, branch });
   const { commits, diff, evidence } = implementation;
   if (commits.length === 0) return hold(['no commits']);
-  if (evidence === null) return hold(['no evidence file']);
+  if (!hasEvidence(evidence)) return hold(['no evidence file']);
   const { findings } = await executor.review({
     ticket,
     diff,
@@ -149,7 +154,6 @@ const work = async (
   await tracker.comment(
     number,
     evidenceComment({
-      ticket: number,
       branch,
       evidence,
       gateSummary: checked.summary,
@@ -179,7 +183,7 @@ export const runLoop = async (
     const ticket = open.find(({ number }) => number === next?.number);
     if (ticket === undefined) return { outcomes, humanBlockers };
     tried.add(ticket.number);
-    const outcome = await work(ports, standards, ticket);
+    const outcome = await workTicket(ports, standards, ticket);
     outcomes.push(outcome);
     onOutcome(outcome);
   }

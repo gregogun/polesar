@@ -10,7 +10,6 @@ import {
 } from './frontier.ts';
 
 type Merged = {
-  ticket: number;
   branch: string;
   evidence: string;
   gateSummary: string;
@@ -66,8 +65,12 @@ export const runSummary = ({
   const merged = outcomes.filter((outcome) => outcome.merged).length;
   const held = outcomes.length - merged;
   const counts = [`${merged} merged`, ...(held > 0 ? [`${held} held`] : [])];
+  const stopped =
+    held > 0
+      ? 'nothing left to try; held tickets stay on the frontier'
+      : 'nothing left on the frontier';
   return `${[
-    `loop stopped: nothing left on the frontier (${counts.join(', ')})`,
+    `loop stopped: ${stopped} (${counts.join(', ')})`,
     ...describeHumanBlockers(humanBlockers),
   ].join('\n')}\n`;
 };

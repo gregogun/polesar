@@ -1,4 +1,4 @@
-type GateInput = {
+export type GateInput = {
   ticket: { number: number; title: string };
   branch: string;
   /** The PR body, rendered by polesar. */

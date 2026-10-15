@@ -175,7 +175,7 @@ describe('polesar loop', () => {
         [
           '#1 Schema: held, not merged: gate red: test failed: schema.test.ts',
           '#2 Docs: merged',
-          'loop stopped: nothing left on the frontier (1 merged, 1 held)',
+          'loop stopped: nothing left to try; held tickets stay on the frontier (1 merged, 1 held)',
           '',
         ].join('\n')
       );
@@ -213,6 +213,27 @@ describe('polesar loop', () => {
       expectHeld(result);
       expect(result.stdout).toContain(
         '#1 Schema: held, not merged: unreviewed commits: late\n'
+      );
+    });
+
+    it('holds a ticket whose gate reports no commits, so an unreviewed branch cannot pass by saying nothing', async () => {
+      const result = await runLoop({ tickets, gate: { 1: { commits: [] } } });
+
+      expectHeld(result);
+      expect(result.stdout).toContain(
+        '#1 Schema: held, not merged: gate reported no commits\n'
+      );
+    });
+
+    it('treats an empty evidence file as no evidence file', async () => {
+      const result = await runLoop({
+        tickets,
+        implement: { 1: { evidence: ' \n' } },
+      });
+
+      expectHeld(result);
+      expect(result.stdout).toContain(
+        '#1 Schema: held, not merged: no evidence file\n'
       );
     });
 

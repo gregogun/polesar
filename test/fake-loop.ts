@@ -1,12 +1,12 @@
 import { readFile } from 'node:fs/promises';
 import type {
   Executor,
+  ImplementInput,
   Implementation,
   Review,
   ReviewInput,
-  TicketSpec,
 } from '../src/executor.ts';
-import type { Gate, GateResult } from '../src/gate.ts';
+import type { Gate, GateInput, GateResult } from '../src/gate.ts';
 import type { LoopScript } from './loop-script.ts';
 
 /** The branches the fake implementer has committed to, shared with the fake gate. */
@@ -25,13 +25,7 @@ class FakeExecutor implements Executor {
     this.#branches = branches;
   }
 
-  implement({
-    ticket,
-    branch,
-  }: {
-    ticket: TicketSpec;
-    branch: string;
-  }): Promise<Implementation> {
+  implement({ ticket, branch }: ImplementInput): Promise<Implementation> {
     const { number } = ticket;
     const implementation = {
       commits: [`c${number}`],
@@ -62,13 +56,7 @@ class FakeGate implements Gate {
     this.#branches = branches;
   }
 
-  check({
-    ticket,
-    branch,
-  }: {
-    ticket: { number: number };
-    branch: string;
-  }): Promise<GateResult> {
+  check({ ticket, branch }: GateInput): Promise<GateResult> {
     return Promise.resolve({
       green: true,
       summary: 'all checks passed',

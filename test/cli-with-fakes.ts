@@ -14,9 +14,15 @@ import { recording } from './recording.ts';
  */
 const { POLESAR_TRACKER_FAKE, POLESAR_LOOP_FAKE, POLESAR_FAKE_LOG } =
   process.env;
+
 // Loaded once, on first use, so the executor and gate share one scripted branch state.
 let loop: ReturnType<typeof loadFakeLoop> | undefined;
-const fakeLoop = (file: string) => (loop ??= loadFakeLoop(file));
+const fakeLoopPort = async <K extends 'executor' | 'gate'>(port: K) => {
+  if (!POLESAR_LOOP_FAKE) return unavailable[port]();
+  loop ??= loadFakeLoop(POLESAR_LOOP_FAKE);
+  return recording(port, (await loop)[port], POLESAR_FAKE_LOG);
+};
+
 await main(process.argv.slice(2), {
   tracker: async () =>
     POLESAR_TRACKER_FAKE
@@ -26,20 +32,6 @@ await main(process.argv.slice(2), {
           POLESAR_FAKE_LOG
         )
       : new GitHubTracker(),
-  executor: async () =>
-    POLESAR_LOOP_FAKE
-      ? recording(
-          'executor',
-          (await fakeLoop(POLESAR_LOOP_FAKE)).executor,
-          POLESAR_FAKE_LOG
-        )
-      : unavailable.executor(),
-  gate: async () =>
-    POLESAR_LOOP_FAKE
-      ? recording(
-          'gate',
-          (await fakeLoop(POLESAR_LOOP_FAKE)).gate,
-          POLESAR_FAKE_LOG
-        )
-      : unavailable.gate(),
+  executor: () => fakeLoopPort('executor'),
+  gate: () => fakeLoopPort('gate'),
 });
