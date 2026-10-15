@@ -59,6 +59,42 @@ The Tracker contract tests check the GitHub adapter against the fake tracker use
 
 Once you've looked at an escalation, record your verdict with `polesar verdict <ticket> approved|rejected`: approved if the held-back change was fine to merge. It's posted as a comment on the ticket for telemetry, so rules can be relaxed on evidence. `--dry-run` and `--json` work as for the other commands.
 
+### Budget and rate limits
+
+`polesar loop` stops before starting a ticket when the budget won't cover it, and exits `3`. The defaults are deliberately conservative. A repo can override any of them in `polesar.json`:
+
+```json
+{
+  "budget": {
+    "ticketTurns": 200,
+    "weeklyFloor": 70,
+    "loopShare": 25,
+    "runCap": 10,
+    "maxReadingAgeMinutes": 30
+  }
+}
+```
+
+- `ticketTurns`: agent turns one ticket may take across all its implementer and reviewer runs. Running out escalates the ticket.
+- `weeklyFloor`: no new ticket starts once weekly usage is at or above this percent.
+- `loopShare`: the percent of weekly usage the loop may spend in a week, across runs.
+- `runCap`: the percent of weekly usage one run may spend.
+
+The usage rules are checked before each ticket starts, so the ticket in progress can take a run past them. Usage can't be split by who spent it, so all usage while the loop runs counts as the loop's. Headless runs don't report usage, so polesar reads it from your Claude Code status line (Pro and Max plans). Wrap your status line with `polesar statusline` in `~/.claude/settings.json`:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "polesar statusline --command 'bash ~/.claude/statusline.sh'"
+  }
+}
+```
+
+It saves each reading to `~/.polesar/usage.json` (or under `POLESAR_HOME`), then runs your command on the same input, so the status line looks exactly as before. If there's no reading, it has no 7-day window, or it's older than `maxReadingAgeMinutes`, the loop starts no ticket and says how to refresh it.
+
+If an agent hits a rate limit, the run pauses (exit `3`). It uses no retry and changes no labels. Run `polesar loop` again after the reset and it carries on with that ticket from the same step, with its retries and turns as they were. If a human took the ticket off the frontier in the meantime, the paused work is dropped.
+
 ### Hooks
 
 `polesar install-hooks` adds polesar's Claude Code hooks to `.claude/settings.json` at the repo root, keeping any settings already there. A polesar hook installed with a different command is replaced rather than duplicated, so rerunning it changes nothing. `--dry-run` shows what it would change, `--json` reports each hook's status (`added`, `updated` or `present`), and `--command` changes how the hooks run polesar (default: `polesar`, which must be on `PATH`).

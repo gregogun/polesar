@@ -10,6 +10,7 @@ import {
 } from './frontier.ts';
 import type { Finding } from './executor.ts';
 import type { GateResult } from './gate.ts';
+import type { LoopResult, Stopped } from './loop.ts';
 import type { ProtectedChange } from './protected-paths.ts';
 import type { EscalationVerdict, VerdictResult } from './verdict.ts';
 
@@ -86,7 +87,9 @@ export type Step =
       committed: string[];
     }
   | { step: 'review'; of: string[]; findings: Finding[] }
-  | { step: 'gate' | 'rerun'; result: GateResult };
+  | { step: 'gate' | 'rerun'; result: GateResult }
+  /** A rate limit cut the agent run before `before` short; it was redone after `until`. */
+  | { step: 'paused'; until: string; before: 'implement' | 'review' };
 
 const IMPLEMENT_WITH = { review: 'review findings', gate: 'gate failure' };
 
@@ -113,6 +116,9 @@ const describeStep = (step: Step) => {
         ? `committed ${step.committed.join(', ')}`
         : 'no commits';
     return `${label}: ${committed}`;
+  }
+  if (step.step === 'paused') {
+    return `Paused for a rate limit until ${step.until} before ${step.before === 'implement' ? 'implementing' : 'reviewing'}`;
   }
   if (step.step === 'review') {
     return `Review of ${step.of.join(', ')}: ${describeFindings(step.findings)}`;
@@ -215,13 +221,18 @@ export const describeOutcome = ({
     ),
   ].join('\n')}\n`;
 
+const describeStopped = (stopped: Stopped) =>
+  stopped.reason === 'done'
+    ? 'loop stopped: nothing left on the frontier'
+    : stopped.reason === 'paused'
+      ? `loop paused: rate limited until ${stopped.until}. #${stopped.ticket} keeps its place, with no retry used and its labels unchanged: run polesar loop again after then to resume it`
+      : `loop stopped before the next ticket: ${stopped.detail}`;
+
 export const runSummary = ({
   outcomes,
   humanBlockers,
-}: {
-  outcomes: Outcome[];
-  humanBlockers: HumanBlocker[];
-}) => {
+  stopped,
+}: LoopResult) => {
   const merged = outcomes.filter((outcome) => outcome.merged).length;
   const escalated = outcomes.length - merged;
   const counts = [
@@ -229,7 +240,7 @@ export const runSummary = ({
     ...(escalated > 0 ? [`${escalated} escalated`] : []),
   ];
   return `${[
-    `loop stopped: nothing left on the frontier (${counts.join(', ')})`,
+    `${describeStopped(stopped)} (${counts.join(', ')})`,
     ...describeHumanBlockers(humanBlockers),
   ].join('\n')}\n`;
 };

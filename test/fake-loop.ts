@@ -1,16 +1,49 @@
+import { readFileSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import type {
   Executor,
   ImplementInput,
   Implementation,
+  RateLimited,
   Review,
   ReviewInput,
 } from '../src/executor.ts';
 import type { Gate, GateInput, GateResult } from '../src/gate.ts';
 import type { LoopScript, Scripted } from './loop-script.ts';
 
-/** The branches the fake implementer has committed to, shared with the fake gate. */
-type Branches = Map<string, string[]>;
+/**
+ * What the fakes remember: the branches the fake implementer has committed
+ * to, shared with the fake gate, and how many calls each port has had per
+ * ticket. Saved to a state file when there is one, so runs can carry on
+ * where the last left off.
+ */
+type FakeState = {
+  branches: Record<string, string[]>;
+  calls: Record<'implement' | 'review' | 'gate', Record<number, number>>;
+};
+
+class Store {
+  readonly state: FakeState;
+  readonly #file: string | undefined;
+
+  constructor(file: string | undefined) {
+    this.#file = file;
+    let saved: FakeState | undefined;
+    try {
+      if (file) saved = JSON.parse(readFileSync(file, 'utf8')) as FakeState;
+    } catch {
+      // No state yet: this is the first run.
+    }
+    this.state = saved ?? {
+      branches: {},
+      calls: { implement: {}, review: {}, gate: {} },
+    };
+  }
+
+  save() {
+    if (this.#file) writeFileSync(this.#file, JSON.stringify(this.state));
+  }
+}
 
 /**
  * Counts calls per ticket and picks that call's scripted behaviour: a list is
@@ -19,16 +52,24 @@ type Branches = Map<string, string[]>;
  */
 class Sequence<T> {
   readonly #script: Record<number, Scripted<T>> | undefined;
-  readonly #calls = new Map<number, number>();
+  readonly #calls: Record<number, number>;
+  readonly #store: Store;
 
-  constructor(script: Record<number, Scripted<T>> | undefined) {
+  constructor(
+    script: Record<number, Scripted<T>> | undefined,
+    store: Store,
+    port: keyof FakeState['calls']
+  ) {
     this.#script = script;
+    this.#calls = store.state.calls[port];
+    this.#store = store;
   }
 
   /** This call's scripted behaviour for `ticket`, and which call it is (1 for the first). */
   next(ticket: number): { scripted: Partial<T> | undefined; call: number } {
-    const call = (this.#calls.get(ticket) ?? 0) + 1;
-    this.#calls.set(ticket, call);
+    const call = (this.#calls[ticket] ?? 0) + 1;
+    this.#calls[ticket] = call;
+    this.#store.save();
     const entry = this.#script?.[ticket];
     const scripted = Array.isArray(entry)
       ? entry[Math.min(call, entry.length) - 1]
@@ -37,43 +78,63 @@ class Sequence<T> {
   }
 }
 
+const rateLimit = (
+  scripted: Partial<RateLimited> | undefined
+): RateLimited | undefined =>
+  scripted?.rateLimited && { rateLimited: scripted.rateLimited };
+
 /**
  * A scripted implementer and reviewer. Unscripted tickets succeed: each
  * implementer run adds a commit (c7, then c7.2, c7.3…) with a diff, no
- * changed files and an evidence file, and the reviewer finds nothing.
+ * changed files and an evidence file, and the reviewer finds nothing. A run
+ * scripted as rate limited does nothing else.
  */
 class FakeExecutor implements Executor {
-  readonly #implement: Sequence<Implementation>;
-  readonly #review: Sequence<Review>;
-  readonly #branches: Branches;
+  readonly #implement: Sequence<Implementation & RateLimited>;
+  readonly #review: Sequence<Review & RateLimited>;
+  readonly #store: Store;
 
-  constructor(script: LoopScript, branches: Branches) {
-    this.#implement = new Sequence(script.implement);
-    this.#review = new Sequence(script.review);
-    this.#branches = branches;
+  constructor(script: LoopScript, store: Store) {
+    this.#implement = new Sequence(script.implement, store, 'implement');
+    this.#review = new Sequence(script.review, store, 'review');
+    this.#store = store;
   }
 
-  implement({ ticket, branch }: ImplementInput): Promise<Implementation> {
+  implement({
+    ticket,
+    branch,
+  }: ImplementInput): Promise<Implementation | RateLimited> {
     const { number } = ticket;
     const { scripted, call } = this.#implement.next(number);
+    const limited = rateLimit(scripted);
+    if (limited) return Promise.resolve(limited);
     const suffix = call === 1 ? '' : `.${call}`;
+    const { branches } = this.#store.state;
     const implementation = {
-      commits: [...(this.#branches.get(branch) ?? []), `c${number}${suffix}`],
+      commits: [...(branches[branch] ?? []), `c${number}${suffix}`],
       diff: `diff for #${number}${suffix}`,
       changes: [],
       evidence: `evidence for #${number}`,
       transcript: `implementer transcript for #${number}`,
+      turns: 1,
+      capHit: false,
       ...scripted,
     };
-    this.#branches.set(branch, implementation.commits);
+    branches[branch] = implementation.commits;
+    this.#store.save();
     return Promise.resolve(implementation);
   }
 
-  review({ ticket }: ReviewInput): Promise<Review> {
-    return Promise.resolve({
-      findings: [],
-      ...this.#review.next(ticket.number).scripted,
-    });
+  review({ ticket }: ReviewInput): Promise<Review | RateLimited> {
+    const { scripted } = this.#review.next(ticket.number);
+    return Promise.resolve(
+      rateLimit(scripted) ?? {
+        findings: [],
+        turns: 1,
+        capHit: false,
+        ...scripted,
+      }
+    );
   }
 }
 
@@ -83,11 +144,11 @@ class FakeExecutor implements Executor {
  */
 class FakeGate implements Gate {
   readonly #results: Sequence<GateResult>;
-  readonly #branches: Branches;
+  readonly #store: Store;
 
-  constructor(script: LoopScript, branches: Branches) {
-    this.#results = new Sequence(script.gate);
-    this.#branches = branches;
+  constructor(script: LoopScript, store: Store) {
+    this.#results = new Sequence(script.gate, store, 'gate');
+    this.#store = store;
   }
 
   check({ ticket, branch }: GateInput): Promise<GateResult> {
@@ -106,18 +167,21 @@ class FakeGate implements Gate {
     return Promise.resolve({
       green: true,
       summary: 'all checks passed',
-      commits: this.#branches.get(branch) ?? [],
+      commits: this.#store.state.branches[branch] ?? [],
       ...this.#results.next(ticket).scripted,
     });
   }
 }
 
-/** A fake executor and gate scripted by a JSON loop script, for running the CLI end to end. */
-export const loadFakeLoop = async (file: string) => {
+/**
+ * A fake executor and gate scripted by a JSON loop script, for running the CLI
+ * end to end. With a state file, they pick up where the last run's left off.
+ */
+export const loadFakeLoop = async (file: string, stateFile?: string) => {
   const script = JSON.parse(await readFile(file, 'utf8')) as LoopScript;
-  const branches: Branches = new Map();
+  const store = new Store(stateFile);
   return {
-    executor: new FakeExecutor(script, branches),
-    gate: new FakeGate(script, branches),
+    executor: new FakeExecutor(script, store),
+    gate: new FakeGate(script, store),
   };
 };
