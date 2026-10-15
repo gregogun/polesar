@@ -39,8 +39,8 @@ class Sequence<T> {
 
 /**
  * A scripted implementer and reviewer. Unscripted tickets succeed: each
- * implementer run adds a commit (c7, then c7.2, c7.3…) with a diff and an
- * evidence file, and the reviewer finds nothing.
+ * implementer run adds a commit (c7, then c7.2, c7.3…) with a diff, no
+ * changed files and an evidence file, and the reviewer finds nothing.
  */
 class FakeExecutor implements Executor {
   readonly #implement: Sequence<Implementation>;
@@ -60,6 +60,7 @@ class FakeExecutor implements Executor {
     const implementation = {
       commits: [...(this.#branches.get(branch) ?? []), `c${number}${suffix}`],
       diff: `diff for #${number}${suffix}`,
+      changes: [],
       evidence: `evidence for #${number}`,
       transcript: `implementer transcript for #${number}`,
       ...scripted,

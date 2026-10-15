@@ -2,14 +2,21 @@ import { readFileSync } from 'node:fs';
 import { text } from 'node:stream/consumers';
 import { parseArgs, type ParseArgsOptionsConfig } from 'node:util';
 import { preToolUseHook, stopHook, type HookResponse } from './hook.ts';
+import { ConfigError } from './config.ts';
 import { describeFrontier, findFrontier } from './frontier.ts';
 import type { Executor } from './executor.ts';
 import type { Gate } from './gate.ts';
 import { describeInstall, installHooks } from './install-hooks.ts';
 import { LoopError, planLoop, runLoop } from './loop.ts';
-import { describeOutcome, describePlan, runSummary } from './templates.ts';
+import {
+  describeOutcome,
+  describePlan,
+  describeVerdict,
+  runSummary,
+} from './templates.ts';
 import { TrackerError, type Tracker } from './tracker.ts';
-import { ConfigError, summarise, verify } from './verify.ts';
+import { isVerdict, recordVerdict } from './verdict.ts';
+import { summarise, verify } from './verify.ts';
 
 const HELP = `Usage: polesar [options]
        polesar <command> [options]
@@ -48,7 +55,12 @@ Commands:
                    Non-blocking findings go in the PR body and the log.
                    polesar merges only when the gate is green, no finding
                    blocks, every commit was reviewed and the evidence exists,
-                   then closes the ticket with an evidence comment. Anything
+                   then closes the ticket with an evidence comment. A branch
+                   that modifies or deletes a protected file (existing tests,
+                   verify/lint/typecheck config, hook config, CI workflows)
+                   escalates even when green; adding files never does.
+                   "protectedPaths": {"add": [...], "remove": [...]} in
+                   polesar.json adjusts the default globs. Anything
                    else (no commits, no evidence, a budget used up) escalates:
                    the ticket is relabelled ready-for-human with a comment
                    giving the trail. The loop never applies ready-for-agent.
@@ -58,14 +70,25 @@ Commands:
                    {outcomes, humanBlockers} ({planned, humanBlockers} with
                    --dry-run).
                    Exit: 0 every ticket merged (or dry run), 1 a ticket was
-                   escalated or GitHub couldn't be read, 2 bad usage.
+                   escalated or GitHub couldn't be read, 2 bad usage or
+                   config.
+  verdict <ticket> approved|rejected [--dry-run] [--json]
+                   Record your verdict on polesar's latest escalation of a
+                   ticket, as a comment on it for telemetry: approved if the
+                   change it held back was fine to merge, rejected if it
+                   wasn't. Verdicts on protected-path escalations show which
+                   rules can be relaxed. Only you may run it: the PreToolUse
+                   hook blocks agents. --dry-run shows what would be recorded.
+                   --json gives {ticket, verdict, recorded}.
+                   Exit: 0 recorded (or dry run), 1 GitHub couldn't be
+                   written, 2 bad usage.
   hook pre-tool-use
                    Claude Code PreToolUse hook guarding the trust boundary.
                    Reads the hook payload on stdin and blocks (exit 2, reason
                    on stderr) tool calls that add the ready-for-agent label,
                    skip pre-commit hooks (git commit --no-verify, changing
                    core.hooksPath), post commit statuses or check runs, or
-                   run decide accept: Bash commands (gh, git, curl to the
+                   run decide accept or verdict: Bash commands (gh, git, curl to the
                    GitHub API) and MCP tools.
                    Fails closed: a payload it can't read, or any error, blocks.
   hook stop        Claude Code Stop hook. Reads the hook payload on stdin and
@@ -91,6 +114,14 @@ Options:
 
 const help = { type: 'boolean', short: 'h' } as const;
 
+/** Exits 2 with `message` and a pointer to --help. */
+const exitWithUsage = (message: string): never => {
+  process.stderr.write(
+    `polesar: ${message}\nRun 'polesar --help' for usage.\n`
+  );
+  process.exit(2);
+};
+
 // Resolves from both src/ (dev, tests) and dist/ (installed bin).
 const readVersion = (): string => {
   const pkg = JSON.parse(
@@ -107,11 +138,9 @@ const parseArgsOrExit = <T extends ParseArgsOptionsConfig>(
   try {
     return parseArgs({ args, options, allowPositionals });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(
-      `polesar: ${message}\nRun 'polesar --help' for usage.\n`
+    return exitWithUsage(
+      error instanceof Error ? error.message : String(error)
     );
-    process.exit(2);
   }
 };
 
@@ -212,23 +241,51 @@ export const main = async (argv: string[], ports: Ports) => {
       writeResult(values.json, plan, describePlan);
       return;
     }
-    const result = await orExitOnPortError(async () => {
-      const loopPorts = {
-        tracker: await ports.tracker(),
-        executor: await ports.executor(),
-        gate: await ports.gate(),
-      };
-      return runLoop(loopPorts, {
-        cwd: process.cwd(),
-        onOutcome: (outcome) => {
-          if (!values.json) process.stdout.write(describeOutcome(outcome));
-        },
-      });
-    });
+    const result = await orExitOnConfigError(() =>
+      orExitOnPortError(async () => {
+        const loopPorts = {
+          tracker: await ports.tracker(),
+          executor: await ports.executor(),
+          gate: await ports.gate(),
+        };
+        return runLoop(loopPorts, {
+          cwd: process.cwd(),
+          onOutcome: (outcome) => {
+            if (!values.json) process.stdout.write(describeOutcome(outcome));
+          },
+        });
+      })
+    );
     writeResult(values.json, result, runSummary);
     process.exitCode = result.outcomes.every((outcome) => outcome.merged)
       ? 0
       : 1;
+  } else if (command === 'verdict') {
+    const { values, positionals } = parseCommandArgsOrExit(
+      rest,
+      { 'dry-run': { type: 'boolean' }, json: { type: 'boolean' } },
+      { allowPositionals: true }
+    );
+    if (positionals.length !== 2) {
+      return exitWithUsage(
+        'expected a ticket number and a verdict: polesar verdict <ticket> approved|rejected'
+      );
+    }
+    const [ticket = '', verdict = ''] = positionals;
+    if (!/^\d+$/.test(ticket)) {
+      return exitWithUsage(`ticket must be a number, got '${ticket}'`);
+    }
+    if (!isVerdict(verdict)) {
+      return exitWithUsage(
+        `verdict must be approved or rejected, got '${verdict}'`
+      );
+    }
+    const result = await orExitOnPortError(async () =>
+      recordVerdict(await ports.tracker(), Number(ticket), verdict, {
+        dryRun: values['dry-run'],
+      })
+    );
+    writeResult(values.json, result, describeVerdict);
   } else if (command === 'install-hooks') {
     const { values } = parseCommandArgsOrExit(rest, {
       'dry-run': { type: 'boolean' },
@@ -254,10 +311,9 @@ export const main = async (argv: string[], ports: Ports) => {
     } else if (event === 'stop') {
       writeHookResponse(await stopHook(await text(process.stdin)));
     } else {
-      process.stderr.write(
-        `polesar: unknown hook '${positionals.join(' ')}'. Supported: pre-tool-use, stop\nRun 'polesar --help' for usage.\n`
+      exitWithUsage(
+        `unknown hook '${positionals.join(' ')}'. Supported: pre-tool-use, stop`
       );
-      process.exit(2);
     }
   } else {
     const { values } = parseArgsOrExit(argv, {

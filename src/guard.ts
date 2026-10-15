@@ -357,25 +357,34 @@ const ACCEPT = block(
     "Leave the proposal pending and ask the user to run 'polesar decide accept' themselves."
 );
 
+const VERDICT = block(
+  'polesar: blocked: only the user may record a verdict on an escalation, so telemetry holds only their judgment. ' +
+    "Leave the escalation as it is and ask the user to run 'polesar verdict' themselves."
+);
+
 /** The polesar bin, or its entry point run through node. */
 const POLESAR = /(^|\/)(polesar|cli\.[cm]?[jt]s)$/;
 
 /**
- * Whether an argv runs `polesar decide accept`. polesar may be launched
- * through node, pnpm, npx and the like, so this looks for polesar anywhere
- * before `decide`.
+ * The positionals after `polesar <command>` in an argv, or undefined when it
+ * doesn't run that command. polesar may be launched through node, pnpm, npx
+ * and the like, so this looks for polesar anywhere before the command.
  */
-const acceptsDecision = (argv: string[]) =>
-  argv.some(
+const polesarPositionals = (argv: string[], command: string) => {
+  const at = argv.findIndex(
     (arg, i) =>
-      arg === 'decide' &&
-      argv.slice(0, i).some((before) => POLESAR.test(before)) &&
-      argv.slice(i + 1).find((next) => !next.startsWith('-')) === 'accept'
+      arg === command && argv.slice(0, i).some((before) => POLESAR.test(before))
   );
+  return at === -1
+    ? undefined
+    : argv.slice(at + 1).filter((next) => !next.startsWith('-'));
+};
 
 const checkCommand = ({ argv, env }: Command): Verdict => {
   const [program, ...args] = argv;
-  if (acceptsDecision(argv)) return ACCEPT;
+  if (polesarPositionals(argv, 'decide')?.[0] === 'accept') return ACCEPT;
+  // Any positional records a verdict; `polesar verdict --help` only reads.
+  if (polesarPositionals(argv, 'verdict')?.length) return VERDICT;
   if (program === 'git') return checkGit(args, env);
   if (program === 'gh') return checkGh(args);
   if (program === 'curl') return checkCurl(args);

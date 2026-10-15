@@ -15,6 +15,12 @@ export type ImplementInput = {
   feedback?: Feedback;
 };
 
+/** A file a branch changes against main. A rename is its old path deleted and its new path added. */
+export type FileChange = {
+  path: string;
+  change: 'added' | 'modified' | 'deleted';
+};
+
 export type Implementation = {
   /** The commits on the branch, oldest first. */
   commits: string[];
@@ -23,6 +29,8 @@ export type Implementation = {
    * branch stood before on a retry, so a review sees only what it hasn't seen.
    */
   diff: string;
+  /** Every file the branch changes against main, whatever run changed it. */
+  changes: FileChange[];
   /** The evidence file's contents (what was run and observed); null when there is none. */
   evidence: string | null;
   /** The implementer's session, kept for telemetry. Never shown to the reviewer. */
