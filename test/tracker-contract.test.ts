@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { GitHubTracker } from '../src/github-tracker.ts';
 import type { Tracker } from '../src/tracker.ts';
 import { FakeTracker } from './fake-tracker.ts';
@@ -31,28 +31,39 @@ const LABELS = ['ready-for-agent', 'ready-for-human'];
 
 const BODY = 'Created by the polesar tracker contract tests; safe to delete.';
 
+/**
+ * Retries `check` until it passes: GitHub's issue list lags a few seconds
+ * behind writes, so a read straight after one can be stale.
+ */
+const eventually = (check: () => Promise<void>) =>
+  vi.waitFor(check, { timeout: 30_000, interval: 2_000 });
+
 const contract = (arrange: Arrange) => {
   it('lists only open tickets, with their labels and every blocker and whether it is open', async () => {
     const { tracker, open, closed, blocked } = await arrange();
 
-    const tickets = await tracker.openTickets();
-    const numbers = tickets.map((ticket) => ticket.number);
+    await eventually(async () => {
+      const tickets = await tracker.openTickets();
+      const numbers = tickets.map((ticket) => ticket.number);
 
-    expect(numbers).toContain(open);
-    expect(numbers).toContain(blocked);
-    expect(numbers).not.toContain(closed);
-    expect(numbers).toEqual([...numbers].sort((a, b) => a - b));
-    const ticket = tickets.find((each) => each.number === blocked);
-    expect(ticket?.title).toBe('Blocked ticket');
-    expect(ticket?.body).toBe(BODY);
-    expect(ticket?.labels).toEqual(['ready-for-agent']);
-    expect(
-      [...(ticket?.blockedBy ?? [])].sort((a, b) => a.number - b.number)
-    ).toEqual([
-      { number: open, open: true },
-      { number: closed, open: false },
-    ]);
-    expect(tickets.find((each) => each.number === open)?.blockedBy).toEqual([]);
+      expect(numbers).toContain(open);
+      expect(numbers).toContain(blocked);
+      expect(numbers).not.toContain(closed);
+      expect(numbers).toEqual([...numbers].sort((a, b) => a - b));
+      const ticket = tickets.find((each) => each.number === blocked);
+      expect(ticket?.title).toBe('Blocked ticket');
+      expect(ticket?.body).toBe(BODY);
+      expect(ticket?.labels).toEqual(['ready-for-agent']);
+      expect(
+        [...(ticket?.blockedBy ?? [])].sort((a, b) => a.number - b.number)
+      ).toEqual([
+        { number: open, open: true },
+        { number: closed, open: false },
+      ]);
+      expect(tickets.find((each) => each.number === open)?.blockedBy).toEqual(
+        []
+      );
+    });
   });
 
   it('adds and removes labels, ignoring a label already there or already gone', async () => {
@@ -65,11 +76,15 @@ const contract = (arrange: Arrange) => {
     await tracker.addLabel(open, 'ready-for-human');
     await tracker.addLabel(open, 'ready-for-human');
     await tracker.addLabel(open, 'ready-for-agent');
-    expect(await labelsOf()).toEqual(['ready-for-agent', 'ready-for-human']);
+    await eventually(async () => {
+      expect(await labelsOf()).toEqual(['ready-for-agent', 'ready-for-human']);
+    });
 
     await tracker.removeLabel(open, 'ready-for-agent');
     await tracker.removeLabel(open, 'ready-for-agent');
-    expect(await labelsOf()).toEqual(['ready-for-human']);
+    await eventually(async () => {
+      expect(await labelsOf()).toEqual(['ready-for-human']);
+    });
   });
 
   it('comments on and closes a ticket, ignoring a close of one already closed', async () => {
@@ -79,8 +94,10 @@ const contract = (arrange: Arrange) => {
     await tracker.close(open);
     await tracker.close(open);
 
-    const numbers = (await tracker.openTickets()).map(({ number }) => number);
-    expect(numbers).not.toContain(open);
+    await eventually(async () => {
+      const numbers = (await tracker.openTickets()).map(({ number }) => number);
+      expect(numbers).not.toContain(open);
+    });
   });
 };
 
