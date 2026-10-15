@@ -6,6 +6,7 @@ import { ConfigError } from './config.ts';
 import { describeFrontier, findFrontier } from './frontier.ts';
 import type { Executor } from './executor.ts';
 import type { Gate } from './gate.ts';
+import type { Usage } from './usage.ts';
 import { describeInstall, installHooks } from './install-hooks.ts';
 import { LoopError, planLoop, runLoop } from './loop.ts';
 import {
@@ -15,6 +16,7 @@ import {
   runSummary,
 } from './templates.ts';
 import { TrackerError, type Tracker } from './tracker.ts';
+import { statusLine } from './statusline.ts';
 import { isVerdict, recordVerdict } from './verdict.ts';
 import { summarise, verify } from './verify.ts';
 
@@ -64,14 +66,30 @@ Commands:
                    else (no commits, no evidence, a budget used up) escalates:
                    the ticket is relabelled ready-for-human with a comment
                    giving the trail. The loop never applies ready-for-agent.
+                   Budget, set under "budget" in polesar.json (defaults):
+                   ticketTurns (200) agent turns per ticket across all its
+                   runs, escalating when used up; and, as percents of weekly
+                   usage, weeklyFloor (70) no new ticket at or above it,
+                   loopShare (25) the loop's share per week across runs,
+                   runCap (10) per run, each checked before a ticket starts,
+                   so the ticket in progress can take a run over. Weekly usage
+                   comes from the reading polesar statusline saved; with
+                   none, or one older than maxReadingAgeMinutes (30), no
+                   ticket starts. A rate limit pauses the run with no retry
+                   used and no label changed; run polesar loop after the
+                   reset to resume the ticket where it stopped, budget
+                   permitting.
                    Stops when nothing is left, naming ready-for-human tickets
                    blocking AFK work. --dry-run shows the planned transitions
                    without running agents or changing anything. --json gives
-                   {outcomes, humanBlockers} ({planned, humanBlockers} with
-                   --dry-run).
+                   {outcomes, humanBlockers, stopped} ({planned,
+                   humanBlockers} with --dry-run); stopped.reason is done,
+                   budget (with rule and detail) or paused (with until and
+                   ticket).
                    Exit: 0 every ticket merged (or dry run), 1 a ticket was
                    escalated or GitHub couldn't be read, 2 bad usage or
-                   config.
+                   config, 3 stopped early by the budget or paused by a
+                   rate limit.
   verdict <ticket> approved|rejected [--dry-run] [--json]
                    Record your verdict on polesar's latest escalation of a
                    ticket, as a comment on it for telemetry: approved if the
@@ -82,6 +100,15 @@ Commands:
                    --json gives {ticket, verdict, recorded}.
                    Exit: 0 recorded (or dry run), 1 GitHub couldn't be
                    written, 2 bad usage.
+  statusline [--command <cmd>]
+                   Claude Code status line that saves the plan's usage
+                   (rate_limits in the payload, Pro and Max plans) for the
+                   loop's budget, then runs <cmd> through /bin/sh with the
+                   same payload so it shows exactly what <cmd> would. Without
+                   --command it shows nothing. Set it in settings.json:
+                   "statusLine": {"type": "command", "command":
+                   "polesar statusline --command 'your status line'"}.
+                   Exit: <cmd>'s exit code (0 without one).
   hook pre-tool-use
                    Claude Code PreToolUse hook guarding the trust boundary.
                    Reads the hook payload on stdin and blocks (exit 2, reason
@@ -110,6 +137,10 @@ Commands:
 Options:
   -h, --help       Show this help and exit
   -v, --version    Print the version and exit
+
+Environment:
+  POLESAR_HOME     Where polesar keeps usage readings, the loop's weekly
+                   usage and paused runs (default: ~/.polesar)
 `;
 
 const help = { type: 'boolean', short: 'h' } as const;
@@ -195,6 +226,11 @@ export type Ports = {
   tracker: () => Promise<Tracker>;
   executor: () => Promise<Executor>;
   gate: () => Promise<Gate>;
+  usage: () => Promise<Usage>;
+  /** The time now, in milliseconds since the epoch. */
+  now: () => number;
+  /** polesar's own directory, outside any repo: usage readings and the loop's books. */
+  home: string;
 };
 
 /** Runs `action`, exiting 1 with the message when the tracker fails or the loop can't run. */
@@ -247,9 +283,12 @@ export const main = async (argv: string[], ports: Ports) => {
           tracker: await ports.tracker(),
           executor: await ports.executor(),
           gate: await ports.gate(),
+          usage: await ports.usage(),
         };
         return runLoop(loopPorts, {
           cwd: process.cwd(),
+          home: ports.home,
+          now: ports.now,
           onOutcome: (outcome) => {
             if (!values.json) process.stdout.write(describeOutcome(outcome));
           },
@@ -257,9 +296,11 @@ export const main = async (argv: string[], ports: Ports) => {
       })
     );
     writeResult(values.json, result, runSummary);
-    process.exitCode = result.outcomes.every((outcome) => outcome.merged)
-      ? 0
-      : 1;
+    process.exitCode = !result.outcomes.every((outcome) => outcome.merged)
+      ? 1
+      : result.stopped.reason === 'done'
+        ? 0
+        : 3;
   } else if (command === 'verdict') {
     const { values, positionals } = parseCommandArgsOrExit(
       rest,
@@ -298,6 +339,15 @@ export const main = async (argv: string[], ports: Ports) => {
     );
     writeResult(values.json, result, (installed) =>
       describeInstall(installed, options)
+    );
+  } else if (command === 'statusline') {
+    const { values } = parseCommandArgsOrExit(rest, {
+      command: { type: 'string' },
+    });
+    process.exitCode = await statusLine(
+      await text(process.stdin),
+      values.command,
+      { home: ports.home, now: ports.now() }
     );
   } else if (command === 'hook') {
     const { positionals } = parseCommandArgsOrExit(

@@ -1,25 +1,43 @@
 import { GitHubTracker } from '../src/github-tracker.ts';
 import { unavailable } from '../src/loop.ts';
+import { homedir } from 'node:os';
+import path from 'node:path';
 import { main } from '../src/main.ts';
+import { FileUsage } from '../src/usage.ts';
 import { loadFakeLoop } from './fake-loop.ts';
 import { loadFakeTracker } from './fake-tracker.ts';
+import { loadFakeUsage } from './fake-usage.ts';
 import { recording } from './recording.ts';
 
 /**
  * The polesar CLI as tests run it: the real CLI, with fakes scripted by the
- * files POLESAR_TRACKER_FAKE (the tracker's issue graph) and POLESAR_LOOP_FAKE
- * (the executor and gate) name. With POLESAR_FAKE_LOG set, every call the fakes
- * receive is logged there. The fakes live only here, out of the shipped bin, so
- * nothing outside the tests can swap in a made-up tracker or agent.
+ * files POLESAR_TRACKER_FAKE (the tracker's issue graph), POLESAR_LOOP_FAKE
+ * (the executor and gate) and POLESAR_USAGE_FAKE (usage readings) name, and
+ * the clock set to POLESAR_FAKE_NOW. With POLESAR_FAKE_LOG set, every call the
+ * fakes receive is logged there. With POLESAR_FAKE_STATE set, the executor and
+ * gate keep their branches and call counts there from one run to the next.
+ * The fakes live only here, out of the shipped bin, so nothing outside the
+ * tests can swap in a made-up tracker or agent.
  */
-const { POLESAR_TRACKER_FAKE, POLESAR_LOOP_FAKE, POLESAR_FAKE_LOG } =
-  process.env;
+const {
+  POLESAR_TRACKER_FAKE,
+  POLESAR_LOOP_FAKE,
+  POLESAR_USAGE_FAKE,
+  POLESAR_FAKE_NOW,
+  POLESAR_FAKE_LOG,
+  POLESAR_FAKE_STATE,
+  POLESAR_HOME,
+} = process.env;
+
+const home = POLESAR_HOME ?? path.join(homedir(), '.polesar');
+const now = () =>
+  POLESAR_FAKE_NOW === undefined ? Date.now() : Date.parse(POLESAR_FAKE_NOW);
 
 // Loaded once, on first use, so the executor and gate share one scripted branch state.
 let loop: ReturnType<typeof loadFakeLoop> | undefined;
 const fakeLoopPort = async <K extends 'executor' | 'gate'>(port: K) => {
   if (!POLESAR_LOOP_FAKE) return unavailable[port]();
-  loop ??= loadFakeLoop(POLESAR_LOOP_FAKE);
+  loop ??= loadFakeLoop(POLESAR_LOOP_FAKE, POLESAR_FAKE_STATE);
   return recording(port, (await loop)[port], POLESAR_FAKE_LOG);
 };
 
@@ -34,4 +52,14 @@ await main(process.argv.slice(2), {
       : new GitHubTracker(),
   executor: () => fakeLoopPort('executor'),
   gate: () => fakeLoopPort('gate'),
+  usage: async () =>
+    POLESAR_USAGE_FAKE
+      ? recording(
+          'usage',
+          await loadFakeUsage(POLESAR_USAGE_FAKE, now()),
+          POLESAR_FAKE_LOG
+        )
+      : new FileUsage(home),
+  now,
+  home,
 });

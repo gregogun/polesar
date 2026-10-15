@@ -13,6 +13,8 @@ export type ImplementInput = {
   branch: string;
   /** Absent on the first run. */
   feedback?: Feedback;
+  /** The turns the ticket has left under its per-ticket cap; the agent stops there. */
+  maxTurns: number;
 };
 
 /** A file a branch changes against main. A rename is its old path deleted and its new path added. */
@@ -35,6 +37,14 @@ export type Implementation = {
   evidence: string | null;
   /** The implementer's session, kept for telemetry. Never shown to the reviewer. */
   transcript: string;
+} & Turns;
+
+/** What an agent run cost against the per-ticket cap. */
+type Turns = {
+  /** Turns the run took. */
+  turns: number;
+  /** It stopped at `maxTurns` before finishing, so its result can't be trusted. */
+  capHit: boolean;
 };
 
 /** A repo doc the reviewer judges against, read from the main checkout so the branch can't rewrite it. */
@@ -48,6 +58,8 @@ export type ReviewInput = {
   standards: StandardsDoc[];
   /** Blocking findings this change was meant to fix, to be raised again if it doesn't; empty otherwise. */
   addressing: Finding[];
+  /** The turns the ticket has left under its per-ticket cap; the agent stops there. */
+  maxTurns: number;
 };
 
 export type Finding = {
@@ -56,12 +68,23 @@ export type Finding = {
   summary: string;
 };
 
-export type Review = { findings: Finding[] };
+export type Review = { findings: Finding[] } & Turns;
+
+/**
+ * The plan's rate limit cut an agent run short. Whatever it did is redone
+ * once the limit resets: it costs the ticket no retry and no turns.
+ */
+export type RateLimited = {
+  rateLimited: {
+    /** ISO time the limit resets. */
+    resetsAt: string;
+  };
+};
 
 /** Runs agents in a sandbox. polesar's core reaches agents only through this port. */
 export type Executor = {
   /** Runs the implementer on `branch`. It commits there and never merges. */
-  implement(input: ImplementInput): Promise<Implementation>;
+  implement(input: ImplementInput): Promise<Implementation | RateLimited>;
   /** Runs the read-only reviewer. */
-  review(input: ReviewInput): Promise<Review>;
+  review(input: ReviewInput): Promise<Review | RateLimited>;
 };

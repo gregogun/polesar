@@ -33,6 +33,7 @@ describe('polesar loop', () => {
       {
         ticket: { number: 7, title: 'Docs', body: 'Write the docs.' },
         branch: 'polesar/7',
+        maxTurns: 200,
       },
     ]);
     expect(check?.args).toEqual([
@@ -263,6 +264,7 @@ describe('polesar loop', () => {
           ticket: { number: 1, title: 'Schema', body: '' },
           branch: 'polesar/1',
           feedback: { review: [missingIndex] },
+          maxTurns: 198,
         },
       ]);
       expect(reReview?.args[0]).toMatchObject({
@@ -613,6 +615,7 @@ describe('polesar loop', () => {
           { path: 'docs/adr/0002-b.md', content: '# B' },
         ],
         addressing: [],
+        maxTurns: 199,
       },
     ]);
   });
@@ -718,6 +721,7 @@ describe('polesar loop', () => {
         },
       ],
       humanBlockers: [],
+      stopped: { reason: 'done' },
     });
   });
 
