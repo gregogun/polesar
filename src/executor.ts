@@ -1,12 +1,27 @@
 /** What an agent is given about the ticket it works or judges. */
 export type TicketSpec = { number: number; title: string; body: string };
 
-export type ImplementInput = { ticket: TicketSpec; branch: string };
+/** Why the implementer is sent back to a branch it already committed to. */
+export type Feedback =
+  /** The blocking findings from the last review. */
+  | { review: Finding[] }
+  /** The gate's summary of what still fails after a free rerun. */
+  | { gate: string };
+
+export type ImplementInput = {
+  ticket: TicketSpec;
+  branch: string;
+  /** Absent on the first run. */
+  feedback?: Feedback;
+};
 
 export type Implementation = {
   /** The commits on the branch, oldest first. */
   commits: string[];
-  /** The branch's change against main. */
+  /**
+   * The change this run made: against main on the first run, against where the
+   * branch stood before on a retry, so a review sees only what it hasn't seen.
+   */
   diff: string;
   /** The evidence file's contents (what was run and observed); null when there is none. */
   evidence: string | null;
@@ -23,6 +38,8 @@ export type ReviewInput = {
   diff: string;
   evidence: string;
   standards: StandardsDoc[];
+  /** Blocking findings this change was meant to fix, to be raised again if it doesn't; empty otherwise. */
+  addressing: Finding[];
 };
 
 export type Finding = {

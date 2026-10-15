@@ -1,7 +1,7 @@
 import type { Blocker, Ticket, Tracker } from './tracker.ts';
 
-const READY_FOR_AGENT = 'ready-for-agent';
-const READY_FOR_HUMAN = 'ready-for-human';
+export const READY_FOR_AGENT = 'ready-for-agent';
+export const READY_FOR_HUMAN = 'ready-for-human';
 
 type FrontierTicket = { number: number; title: string };
 

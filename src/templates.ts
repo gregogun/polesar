@@ -8,33 +8,65 @@ import {
   plural,
   type HumanBlocker,
 } from './frontier.ts';
+import type { Finding } from './executor.ts';
+import type { GateResult } from './gate.ts';
 
 type Merged = {
   branch: string;
   evidence: string;
   gateSummary: string;
   reviewed: string[];
+  nonBlocking: string[];
+  /** Red gate summaries that turned green on a rerun with no code change. */
+  flaky: string[];
 };
 
 export const prBody = ({
   ticket,
   evidence,
+  nonBlocking,
 }: {
   ticket: number;
   evidence: string;
-}) => `Closes #${ticket}\n\n## Evidence\n\n${evidence}\n`;
+  nonBlocking: string[];
+}) =>
+  [
+    `Closes #${ticket}`,
+    '',
+    '## Evidence',
+    '',
+    evidence,
+    '',
+    ...(nonBlocking.length > 0
+      ? [
+          '## Non-blocking review findings',
+          '',
+          ...nonBlocking.map((finding) => `- ${finding}`),
+          '',
+        ]
+      : []),
+  ].join('\n');
 
 export const evidenceComment = ({
   branch,
   evidence,
   gateSummary,
   reviewed,
+  nonBlocking,
+  flaky,
 }: Merged) =>
   [
     `Merged by polesar from \`${branch}\`.`,
     '',
     '- Review: no blocking findings',
+    ...(nonBlocking.length > 0
+      ? [`- Non-blocking findings: ${nonBlocking.join('; ')}`]
+      : []),
     `- Gate: ${gateSummary}`,
+    ...flaky.map(
+      (summary) =>
+        `- Flaky gate: ${summary} (green on rerun with no code change)`
+    ),
     `- Reviewed commits: ${reviewed.join(', ')}`,
     '',
     '## Evidence',
@@ -43,17 +75,108 @@ export const evidenceComment = ({
     '',
   ].join('\n');
 
+/** One step the loop took on a ticket, as the escalation trail shows it. */
+export type Step =
+  | {
+      step: 'implement';
+      feedback?: 'review' | 'gate';
+      /** The commits this run added. */
+      committed: string[];
+    }
+  | { step: 'review'; of: string[]; findings: Finding[] }
+  | { step: 'gate' | 'rerun'; result: GateResult };
+
+const IMPLEMENT_WITH = { review: 'review findings', gate: 'gate failure' };
+
+const describeFindings = (findings: Finding[]) => {
+  const of = (blocking: boolean) =>
+    findings
+      .filter((finding) => finding.blocking === blocking)
+      .map((finding) => finding.summary)
+      .join('; ');
+  const parts = [
+    ...(of(true) ? [`blocking: ${of(true)}`] : []),
+    ...(of(false) ? [`non-blocking: ${of(false)}`] : []),
+  ];
+  return parts.length > 0 ? parts.join('; ') : 'no findings';
+};
+
+const describeStep = (step: Step) => {
+  if (step.step === 'implement') {
+    const label = step.feedback
+      ? `Implement with ${IMPLEMENT_WITH[step.feedback]}`
+      : 'Implement';
+    const committed =
+      step.committed.length > 0
+        ? `committed ${step.committed.join(', ')}`
+        : 'no commits';
+    return `${label}: ${committed}`;
+  }
+  if (step.step === 'review') {
+    return `Review of ${step.of.join(', ')}: ${describeFindings(step.findings)}`;
+  }
+  const { green, summary, commits } = step.result;
+  const label = step.step === 'gate' ? 'Gate' : 'Gate rerun';
+  return `${label} on ${commits.join(', ') || 'no commits'}: ${green ? 'green' : 'red'}: ${summary}`;
+};
+
+export const escalationComment = ({
+  branch,
+  reasons,
+  trail,
+  evidence,
+}: {
+  branch: string;
+  reasons: string[];
+  trail: Step[];
+  evidence: string | null;
+}) =>
+  [
+    'Escalated to ready-for-human by polesar.',
+    '',
+    ...reasons.map((reason) => `- ${reason}`),
+    '',
+    `Branch: \`${branch}\``,
+    '',
+    '## Trail',
+    '',
+    ...trail.map((step, index) => `${index + 1}. ${describeStep(step)}`),
+    '',
+    '## Evidence',
+    '',
+    evidence ?? '_No evidence file._',
+    '',
+  ].join('\n');
+
 /** What happened to one ticket in a run. */
 export type Outcome = {
   number: number;
   title: string;
   merged: boolean;
-  /** Why it wasn't merged; empty when it was. */
-  held: string[];
+  /** Why it was escalated to ready-for-human instead; empty when it merged. */
+  escalated: string[];
+  /** Non-blocking review findings, posted on the PR without blocking the merge. */
+  nonBlocking: string[];
+  /** Flaky-gate events: red gate summaries that turned green on a rerun with no code change. */
+  flaky: string[];
 };
 
-export const describeOutcome = ({ number, title, merged, held }: Outcome) =>
-  `#${number} ${title}: ${merged ? 'merged' : `held, not merged: ${held.join('; ')}`}\n`;
+export const describeOutcome = ({
+  number,
+  title,
+  merged,
+  escalated,
+  nonBlocking,
+  flaky,
+}: Outcome) =>
+  `${[
+    `#${number} ${title}: ${merged ? 'merged' : `escalated to ready-for-human: ${escalated.join('; ')}`}`,
+    ...nonBlocking.map((finding) => `  non-blocking finding: ${finding}`),
+    ...flaky.map(
+      (summary) =>
+        `  flaky gate: ${summary} (green on rerun with no code change)`
+    ),
+  ].join('\n')}\n`;
 
 export const runSummary = ({
   outcomes,
@@ -63,14 +186,13 @@ export const runSummary = ({
   humanBlockers: HumanBlocker[];
 }) => {
   const merged = outcomes.filter((outcome) => outcome.merged).length;
-  const held = outcomes.length - merged;
-  const counts = [`${merged} merged`, ...(held > 0 ? [`${held} held`] : [])];
-  const stopped =
-    held > 0
-      ? 'nothing left to try; held tickets stay on the frontier'
-      : 'nothing left on the frontier';
+  const escalated = outcomes.length - merged;
+  const counts = [
+    `${merged} merged`,
+    ...(escalated > 0 ? [`${escalated} escalated`] : []),
+  ];
   return `${[
-    `loop stopped: ${stopped} (${counts.join(', ')})`,
+    `loop stopped: nothing left on the frontier (${counts.join(', ')})`,
     ...describeHumanBlockers(humanBlockers),
   ].join('\n')}\n`;
 };

@@ -7,12 +7,19 @@ import type { RecordedCall } from './recording.ts';
 import { runCli, type CliResult } from './run-cli.ts';
 import type { ScriptedTicket } from './tracker-graph.ts';
 
-/** The tracker graph plus, per ticket number, how the implementer, reviewer and gate behave. Unscripted, they succeed. */
+/** How a port behaves for one ticket: the same on every call, or one entry per call with the last repeating. */
+export type Scripted<T> = Partial<T> | Partial<T>[];
+
+/**
+ * The tracker graph plus, per ticket number, how the implementer, reviewer and
+ * gate behave. Unscripted, they succeed. The gate's checks and reruns share
+ * one sequence.
+ */
 export type LoopScript = {
   tickets: ScriptedTicket[];
-  implement?: Record<number, Partial<Implementation>>;
-  review?: Record<number, Partial<Review>>;
-  gate?: Record<number, Partial<GateResult>>;
+  implement?: Record<number, Scripted<Implementation>>;
+  review?: Record<number, Scripted<Review>>;
+  gate?: Record<number, Scripted<GateResult>>;
 };
 
 const SCRIPT_FILE = 'fakes.json';

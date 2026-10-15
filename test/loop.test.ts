@@ -140,14 +140,14 @@ describe('polesar loop', () => {
     expect(implemented).toEqual(['polesar/3']);
   });
 
-  describe('merges only when the gate is green, nothing blocks, every commit was reviewed and the evidence file exists', () => {
+  describe('merges only when the gate is green, nothing blocks, every commit was reviewed and the evidence file exists, escalating otherwise', () => {
     const tickets = [
       { number: 1, title: 'Schema', labels: ['ready-for-agent'] },
       { number: 2, title: 'Docs', labels: ['ready-for-agent'] },
     ];
 
-    /** Ticket 1 is held: never merged or closed. Ticket 2 still merges. */
-    const expectHeld = (result: Awaited<ReturnType<typeof runLoop>>) => {
+    /** Ticket 1 is escalated, never merged or closed. Ticket 2 still merges. */
+    const expectEscalated = (result: Awaited<ReturnType<typeof runLoop>>) => {
       expect(result.exitCode).toBe(1);
       const merged = result.calls
         .filter(({ method }) => method === 'merge' || method === 'close')
@@ -156,72 +156,33 @@ describe('polesar loop', () => {
         'merge {"ticket":2,"branch":"polesar/2"}',
         'close 2',
       ]);
-      expect(
-        result.calls.some(
-          ({ port, method, args }) =>
-            port === 'tracker' && method !== 'openTickets' && args[0] === 1
-        )
-      ).toBe(false);
+      const labels = result.calls
+        .filter(({ method }) => method.endsWith('Label'))
+        .map(({ method, args }) => `${method} ${args.join(' ')}`);
+      expect(labels).toEqual([
+        'addLabel 1 ready-for-human',
+        'removeLabel 1 ready-for-agent',
+      ]);
     };
 
-    it('holds a ticket whose gate is red', async () => {
-      const result = await runLoop({
-        tickets,
-        gate: { 1: { green: false, summary: 'test failed: schema.test.ts' } },
-      });
-
-      expectHeld(result);
-      expect(result.stdout).toBe(
-        [
-          '#1 Schema: held, not merged: gate red: test failed: schema.test.ts',
-          '#2 Docs: merged',
-          'loop stopped: nothing left to try; held tickets stay on the frontier (1 merged, 1 held)',
-          '',
-        ].join('\n')
-      );
-    });
-
-    it('holds a ticket with blocking review findings, without spending a gate run on it', async () => {
-      const result = await runLoop({
-        tickets,
-        review: {
-          1: {
-            findings: [
-              { blocking: true, summary: 'drops the index the spec asks for' },
-              { blocking: false, summary: 'rename tmp' },
-            ],
-          },
-        },
-      });
-
-      expectHeld(result);
-      expect(result.stdout).toContain(
-        '#1 Schema: held, not merged: blocking review finding: drops the index the spec asks for\n'
-      );
-      const checked = result.calls
-        .filter(({ method }) => method === 'check')
-        .map(({ args }) => (args[0] as { branch: string }).branch);
-      expect(checked).toEqual(['polesar/2']);
-    });
-
-    it('holds a ticket whose gate ran on a commit the reviewer never saw', async () => {
+    it('escalates a ticket whose gate ran on a commit the reviewer never saw', async () => {
       const result = await runLoop({
         tickets,
         gate: { 1: { commits: ['c1', 'late'] } },
       });
 
-      expectHeld(result);
+      expectEscalated(result);
       expect(result.stdout).toContain(
-        '#1 Schema: held, not merged: unreviewed commits: late\n'
+        '#1 Schema: escalated to ready-for-human: unreviewed commits: late\n'
       );
     });
 
-    it('holds a ticket whose gate reports no commits, so an unreviewed branch cannot pass by saying nothing', async () => {
+    it('escalates a ticket whose gate reports no commits, so an unreviewed branch cannot pass by saying nothing', async () => {
       const result = await runLoop({ tickets, gate: { 1: { commits: [] } } });
 
-      expectHeld(result);
+      expectEscalated(result);
       expect(result.stdout).toContain(
-        '#1 Schema: held, not merged: gate reported no commits\n'
+        '#1 Schema: escalated to ready-for-human: gate reported no commits\n'
       );
     });
 
@@ -231,21 +192,21 @@ describe('polesar loop', () => {
         implement: { 1: { evidence: ' \n' } },
       });
 
-      expectHeld(result);
+      expectEscalated(result);
       expect(result.stdout).toContain(
-        '#1 Schema: held, not merged: no evidence file\n'
+        '#1 Schema: escalated to ready-for-human: no evidence file\n'
       );
     });
 
-    it('holds a ticket with no evidence file, without spending a review or gate run on it', async () => {
+    it('escalates a ticket with no evidence file, without spending a review or gate run on it', async () => {
       const result = await runLoop({
         tickets,
         implement: { 1: { evidence: null } },
       });
 
-      expectHeld(result);
+      expectEscalated(result);
       expect(result.stdout).toContain(
-        '#1 Schema: held, not merged: no evidence file\n'
+        '#1 Schema: escalated to ready-for-human: no evidence file\n'
       );
       const judged = result.calls
         .filter(({ method }) => method === 'review' || method === 'check')
@@ -256,15 +217,353 @@ describe('polesar loop', () => {
       expect(judged).toEqual([2, 2]);
     });
 
-    it('holds a ticket the implementer made no commits for', async () => {
+    it('escalates a ticket the implementer made no commits for', async () => {
       const result = await runLoop({
         tickets,
         implement: { 1: { commits: [] } },
       });
 
-      expectHeld(result);
+      expectEscalated(result);
       expect(result.stdout).toContain(
-        '#1 Schema: held, not merged: no commits\n'
+        '#1 Schema: escalated to ready-for-human: no commits\n'
+      );
+    });
+  });
+
+  describe('failure paths', () => {
+    const ticket = { number: 1, title: 'Schema', labels: ['ready-for-agent'] };
+    const missingIndex = {
+      blocking: true,
+      summary: 'drops the index the spec asks for',
+    };
+
+    it('sends blocking findings back to the implementer once, reviews just the fix, and merges it', async () => {
+      const result = await runLoop({
+        tickets: [ticket],
+        review: { 1: [{ findings: [missingIndex] }, { findings: [] }] },
+      });
+
+      expect(result.stderr).toBe('');
+      expect(result.exitCode).toBe(0);
+      expect(
+        writes(result.calls).map(({ port, method }) => `${port}.${method}`)
+      ).toEqual([
+        'executor.implement',
+        'executor.review',
+        'executor.implement',
+        'executor.review',
+        'gate.check',
+        'gate.merge',
+        'tracker.comment',
+        'tracker.close',
+      ]);
+      const [, , fix, reReview] = writes(result.calls);
+      expect(fix?.args).toEqual([
+        {
+          ticket: { number: 1, title: 'Schema', body: '' },
+          branch: 'polesar/1',
+          feedback: { review: [missingIndex] },
+        },
+      ]);
+      expect(reReview?.args[0]).toMatchObject({
+        diff: 'diff for #1.2',
+        addressing: [missingIndex],
+      });
+      expect(result.stdout).toBe(
+        '#1 Schema: merged\nloop stopped: nothing left on the frontier (1 merged)\n'
+      );
+    });
+
+    it('escalates when the review of the fix still blocks, so work cannot bounce between implementer and reviewer forever', async () => {
+      const result = await runLoop({
+        tickets: [ticket],
+        review: { 1: { findings: [missingIndex] } },
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(
+        writes(result.calls).map(({ port, method }) => `${port}.${method}`)
+      ).toEqual([
+        'executor.implement',
+        'executor.review',
+        'executor.implement',
+        'executor.review',
+        'tracker.addLabel',
+        'tracker.removeLabel',
+        'tracker.comment',
+      ]);
+      const labels = result.calls
+        .filter(({ method }) => method.endsWith('Label'))
+        .map(({ method, args }) => `${method} ${args.join(' ')}`);
+      expect(labels).toEqual([
+        'addLabel 1 ready-for-human',
+        'removeLabel 1 ready-for-agent',
+      ]);
+      const comment = result.calls.find(({ method }) => method === 'comment');
+      expect(comment?.args).toEqual([
+        1,
+        [
+          'Escalated to ready-for-human by polesar.',
+          '',
+          '- review retries used up (1 of 1)',
+          '- blocking review finding: drops the index the spec asks for',
+          '',
+          'Branch: `polesar/1`',
+          '',
+          '## Trail',
+          '',
+          '1. Implement: committed c1',
+          '2. Review of c1: blocking: drops the index the spec asks for',
+          '3. Implement with review findings: committed c1.2',
+          '4. Review of c1.2: blocking: drops the index the spec asks for',
+          '',
+          '## Evidence',
+          '',
+          'evidence for #1',
+          '',
+        ].join('\n'),
+      ]);
+      expect(result.stdout).toBe(
+        [
+          '#1 Schema: escalated to ready-for-human: review retries used up (1 of 1); blocking review finding: drops the index the spec asks for',
+          'loop stopped: nothing left on the frontier (0 merged, 1 escalated)',
+          '',
+        ].join('\n')
+      );
+    });
+
+    it('reruns a red gate once with no agent; green with no code change merges and records a flaky gate without using a CI retry', async () => {
+      const result = await runLoop(
+        {
+          tickets: [ticket],
+          gate: {
+            1: [{ green: false, summary: 'test failed: clock.test.ts' }, {}],
+          },
+        },
+        ['--json']
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(
+        writes(result.calls).map(({ port, method }) => `${port}.${method}`)
+      ).toEqual([
+        'executor.implement',
+        'executor.review',
+        'gate.check',
+        'gate.rerun',
+        'gate.merge',
+        'tracker.comment',
+        'tracker.close',
+      ]);
+      const rerun = result.calls.find(({ method }) => method === 'rerun');
+      expect(rerun?.args).toEqual([{ ticket: 1, branch: 'polesar/1' }]);
+      const comment = result.calls.find(({ method }) => method === 'comment');
+      expect(comment?.args[1]).toContain(
+        '- Flaky gate: test failed: clock.test.ts (green on rerun with no code change)\n'
+      );
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        outcomes: [
+          { number: 1, merged: true, flaky: ['test failed: clock.test.ts'] },
+        ],
+      });
+    });
+
+    it('sends a gate still red after its rerun back to the implementer with the failure summary, reviews just the fix, and merges once green', async () => {
+      const red = { green: false, summary: 'test failed: schema.test.ts' };
+      const result = await runLoop({
+        tickets: [ticket],
+        gate: { 1: [red, red, {}] },
+      });
+
+      expect(result.stderr).toBe('');
+      expect(result.exitCode).toBe(0);
+      expect(
+        writes(result.calls).map(({ port, method }) => `${port}.${method}`)
+      ).toEqual([
+        'executor.implement',
+        'executor.review',
+        'gate.check',
+        'gate.rerun',
+        'executor.implement',
+        'executor.review',
+        'gate.check',
+        'gate.merge',
+        'tracker.comment',
+        'tracker.close',
+      ]);
+      const [, , , , fix, reReview] = writes(result.calls);
+      expect(fix?.args[0]).toMatchObject({
+        feedback: { gate: 'test failed: schema.test.ts' },
+      });
+      expect(reReview?.args[0]).toMatchObject({
+        diff: 'diff for #1.2',
+        addressing: [],
+      });
+      const comment = result.calls.find(({ method }) => method === 'comment');
+      expect(comment?.args[1]).toContain('- Reviewed commits: c1, c1.2\n');
+    });
+
+    it('escalates with every CI summary in the trail once the gate is still red after two CI retries', async () => {
+      const result = await runLoop({
+        tickets: [ticket],
+        gate: { 1: { green: false, summary: 'lint failed' } },
+      });
+
+      expect(result.exitCode).toBe(1);
+      const steps = writes(result.calls).map(
+        ({ port, method }) => `${port}.${method}`
+      );
+      const attempt = [
+        'executor.implement',
+        'executor.review',
+        'gate.check',
+        'gate.rerun',
+      ];
+      expect(steps).toEqual([
+        ...attempt,
+        ...attempt,
+        ...attempt,
+        'tracker.addLabel',
+        'tracker.removeLabel',
+        'tracker.comment',
+      ]);
+      const comment = result.calls.find(({ method }) => method === 'comment');
+      expect(comment?.args[1]).toBe(
+        [
+          'Escalated to ready-for-human by polesar.',
+          '',
+          '- CI retries used up (2 of 2)',
+          '- gate red: lint failed',
+          '',
+          'Branch: `polesar/1`',
+          '',
+          '## Trail',
+          '',
+          '1. Implement: committed c1',
+          '2. Review of c1: no findings',
+          '3. Gate on c1: red: lint failed',
+          '4. Gate rerun on c1: red: lint failed',
+          '5. Implement with gate failure: committed c1.2',
+          '6. Review of c1.2: no findings',
+          '7. Gate on c1, c1.2: red: lint failed',
+          '8. Gate rerun on c1, c1.2: red: lint failed',
+          '9. Implement with gate failure: committed c1.3',
+          '10. Review of c1.3: no findings',
+          '11. Gate on c1, c1.2, c1.3: red: lint failed',
+          '12. Gate rerun on c1, c1.2, c1.3: red: lint failed',
+          '',
+          '## Evidence',
+          '',
+          'evidence for #1',
+          '',
+        ].join('\n')
+      );
+    });
+
+    it('counts blocking findings from the review of a CI fix against the same review budget', async () => {
+      const red = { green: false, summary: 'test failed: schema.test.ts' };
+      const result = await runLoop({
+        tickets: [ticket],
+        review: {
+          1: [{ findings: [missingIndex] }, {}, { findings: [missingIndex] }],
+        },
+        gate: { 1: [red, red] },
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(
+        writes(result.calls).map(({ port, method }) => `${port}.${method}`)
+      ).toEqual([
+        'executor.implement',
+        'executor.review',
+        'executor.implement',
+        'executor.review',
+        'gate.check',
+        'gate.rerun',
+        'executor.implement',
+        'executor.review',
+        'tracker.addLabel',
+        'tracker.removeLabel',
+        'tracker.comment',
+      ]);
+      expect(result.stdout).toContain(
+        '#1 Schema: escalated to ready-for-human: review retries used up (1 of 1); blocking review finding: drops the index the spec asks for\n'
+      );
+    });
+
+    it('posts non-blocking findings on the PR and logs them without blocking the merge', async () => {
+      const result = await runLoop({
+        tickets: [ticket],
+        review: {
+          1: { findings: [{ blocking: false, summary: 'rename tmp' }] },
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      const check = result.calls.find(({ method }) => method === 'check');
+      expect(check?.args[0]).toMatchObject({
+        prBody: [
+          'Closes #1',
+          '',
+          '## Evidence',
+          '',
+          'evidence for #1',
+          '',
+          '## Non-blocking review findings',
+          '',
+          '- rename tmp',
+          '',
+        ].join('\n'),
+      });
+      const comment = result.calls.find(({ method }) => method === 'comment');
+      expect(comment?.args[1]).toContain(
+        '- Non-blocking findings: rename tmp\n'
+      );
+      expect(result.stdout).toBe(
+        [
+          '#1 Schema: merged',
+          '  non-blocking finding: rename tmp',
+          'loop stopped: nothing left on the frontier (1 merged)',
+          '',
+        ].join('\n')
+      );
+    });
+
+    it('escalates when the implementer sent back with findings makes no new commits, without reviewing again', async () => {
+      const result = await runLoop({
+        tickets: [ticket],
+        implement: { 1: [{}, { commits: ['c1'] }] },
+        review: { 1: { findings: [missingIndex] } },
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(
+        writes(result.calls).map(({ port, method }) => `${port}.${method}`)
+      ).toEqual([
+        'executor.implement',
+        'executor.review',
+        'executor.implement',
+        'tracker.addLabel',
+        'tracker.removeLabel',
+        'tracker.comment',
+      ]);
+      expect(result.stdout).toContain(
+        '#1 Schema: escalated to ready-for-human: no new commits\n'
+      );
+    });
+
+    it('escalates when a rerun turns green on different commits, since a rerun with no agent cannot change the code', async () => {
+      const result = await runLoop({
+        tickets: [ticket],
+        gate: {
+          1: [{ green: false, summary: 'lint failed' }, { commits: ['other'] }],
+        },
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.calls.some(({ method }) => method === 'merge')).toBe(false);
+      expect(result.stdout).toContain(
+        '#1 Schema: escalated to ready-for-human: gate rerun ran on other, not c1\n'
       );
     });
   });
@@ -313,6 +612,7 @@ describe('polesar loop', () => {
           { path: 'docs/adr/0001-a.md', content: '# A' },
           { path: 'docs/adr/0002-b.md', content: '# B' },
         ],
+        addressing: [],
       },
     ]);
   });
@@ -404,9 +704,18 @@ describe('polesar loop', () => {
           number: 1,
           title: 'Schema',
           merged: false,
-          held: ['gate red: lint failed'],
+          escalated: ['CI retries used up (2 of 2)', 'gate red: lint failed'],
+          nonBlocking: [],
+          flaky: [],
         },
-        { number: 2, title: 'Docs', merged: true, held: [] },
+        {
+          number: 2,
+          title: 'Docs',
+          merged: true,
+          escalated: [],
+          nonBlocking: [],
+          flaky: [],
+        },
       ],
       humanBlockers: [],
     });
