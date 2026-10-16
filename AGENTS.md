@@ -7,7 +7,7 @@ TypeScript CLI, pnpm. Node 24 (`.nvmrc`); TS runs natively in dev, `dist/` is bu
 ## Layout
 
 - `src/cli.ts`: CLI entry point (the `polesar` bin, built to `dist/cli.js`): wires real adapters into `main` (`src/main.ts`)
-- `test/`: tests at the CLI boundary. Use `runCli` from `test/run-cli.ts`; don't test internals. It runs `test/cli-with-fakes.ts`, which wires in-memory fakes for ports (e.g. `trackerGraph` scripts the tracker; `runLoop` from `test/loop-script.ts` also scripts the executor, gate and usage readings and returns every call the fakes received; `loopSession` runs successive loops that share polesar's home and the fakes' state, e.g. to pause and resume). The exception is `test/tracker-contract.test.ts`, which checks the GitHub adapter against the fake.
+- `test/`: tests at the CLI boundary. Use `runCli` from `test/run-cli.ts`; don't test internals. It runs `test/cli-with-fakes.ts`, which wires in-memory fakes for ports (e.g. `trackerGraph` scripts the tracker; `runLoop` from `test/loop-script.ts` also scripts the executor, gate and usage readings and returns every call the fakes received; `loopSession` runs successive loops that share polesar's home and the fakes' state, e.g. to pause and resume). The GitHub gate is tested through the CLI against a scripted `gh` and `git` (`runWithGitHub` from `test/gh-script.ts`, played by `test/fake-gh.ts`). The exceptions are `test/tracker-contract.test.ts` and `test/gate-contract.test.ts`, opt-in tests that check the GitHub adapters against real GitHub.
 
 ## Running
 
