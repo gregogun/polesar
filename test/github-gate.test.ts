@@ -11,11 +11,17 @@ const tickets = [
   },
 ];
 
-const CHECKS_JSON = 'name,state,bucket,description,link,workflow';
+const CHECKS_JSON = 'name,bucket,description,link,workflow';
 const poll = (pr: number) => [
-  ['gh', 'pr', 'view', String(pr), '--json', 'headRefOid,commits'],
+  ['gh', 'pr', 'view', String(pr), '--json', 'headRefOid,commits,baseRefName'],
   ['gh', 'pr', 'checks', String(pr), '--required', '--json', CHECKS_JSON],
 ];
+const required = [
+  ['gh', 'api', 'repos/{owner}/{repo}/rules/branches/main'],
+  ['gh', 'api', 'repos/{owner}/{repo}/branches/main'],
+];
+/** The first poll of a wait, which reads the base branch's required checks. */
+const firstPoll = (pr: number) => [poll(pr)[0]!, ...required, poll(pr)[1]!];
 const pushed = (commit: string) => [
   ['git', 'rev-parse', '--verify', 'refs/heads/polesar/7^{commit}'],
   ['git', 'push', 'origin', `${commit}:refs/heads/polesar/7`],
@@ -45,6 +51,7 @@ const merged = (pr: number, commit: string) => [
   ],
   ['git', 'rev-parse', '--verify', 'refs/heads/polesar/7^{commit}'],
   ['gh', 'pr', 'merge', String(pr), '--merge', '--match-head-commit', commit],
+  ['gh', 'pr', 'view', String(pr), '--json', 'state'],
 ];
 
 const RUN = 'https://github.com/owner/repo/actions/runs';
@@ -109,7 +116,7 @@ describe('polesar loop with the GitHub gate', { timeout: 20_000 }, () => {
         '--body',
         'Closes #7\n\n## Evidence\n\nevidence for #7\n',
       ],
-      ...poll(100),
+      ...firstPoll(100),
       ...poll(100),
       ...poll(100),
       ...merged(100, 'c7'),
@@ -143,7 +150,7 @@ describe('polesar loop with the GitHub gate', { timeout: 20_000 }, () => {
         '--body',
         'Closes #7\n\n## Evidence\n\nevidence for #7\n',
       ],
-      ...poll(42),
+      ...firstPoll(42),
       ...merged(42, 'c7'),
     ]);
   });
@@ -228,7 +235,7 @@ describe('polesar loop with the GitHub gate', { timeout: 20_000 }, () => {
     expect(reruns.every((argv) => argv[3] === '11')).toBe(true);
   });
 
-  it('stops waiting at the timeout and reports the checks still running', async () => {
+  it('escalates at the timeout, reporting the checks still running, with no rerun and no retry', async () => {
     const result = await runWithGitHub(
       { tickets },
       { checks: { 'polesar/7': [[{ name: 'check', bucket: 'pending' }]] } },
@@ -237,25 +244,134 @@ describe('polesar loop with the GitHub gate', { timeout: 20_000 }, () => {
 
     expect(result.exitCode).toBe(1);
     expect(JSON.parse(result.stdout).outcomes[0].escalated).toEqual([
-      'CI retries used up (2 of 2)',
-      'gate red: timed out after 0.001 min waiting for required checks on c7.3: still running: check',
+      'gate timed out: timed out after 0.001 min waiting for required checks on c7: still running: check',
     ]);
     expect(
       commands(result.calls).some(([, command]) => command === 'run')
     ).toBe(false);
+    expect(
+      result.calls.filter(({ method }) => method === 'implement')
+    ).toHaveLength(1);
   });
 
-  it('says when no required checks are reported, so a repo without branch protection never looks green', async () => {
+  it('is not green until every required check has reported and passed', async () => {
     const result = await runWithGitHub(
       { tickets },
-      { checks: { 'polesar/7': ['none'] } },
+      {
+        required: ['check', 'gitleaks'],
+        checks: {
+          'polesar/7': [
+            [{ name: 'check', bucket: 'pass' }],
+            [
+              { name: 'check', bucket: 'pass' },
+              { name: 'gitleaks', bucket: 'pending' },
+            ],
+            [
+              { name: 'check', bucket: 'pass' },
+              { name: 'gitleaks', bucket: 'pass' },
+            ],
+          ],
+        },
+      }
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(
+      commands(result.calls).filter(([, , sub]) => sub === 'checks')
+    ).toHaveLength(3);
+    const comment = writes(result.calls).find(
+      ({ method }) => method === 'comment'
+    );
+    expect(comment?.args[1]).toContain(
+      '- Gate: required checks passed on c7: check, gitleaks\n'
+    );
+  });
+
+  it('reports the required checks that never registered when it times out', async () => {
+    const result = await runWithGitHub(
+      { tickets },
+      {
+        required: ['check', 'gitleaks'],
+        checks: { 'polesar/7': [[{ name: 'check', bucket: 'pass' }]] },
+      },
       { args: ['--json'], config: { gate: { timeoutMinutes: 0.001 } } }
     );
 
-    expect(result.exitCode).toBe(1);
-    expect(JSON.parse(result.stdout).outcomes[0].escalated).toContain(
-      'gate red: timed out after 0.001 min waiting for required checks on c7.3: no required checks reported; require status checks on the base branch with branch protection'
+    expect(JSON.parse(result.stdout).outcomes[0].escalated).toEqual([
+      'gate timed out: timed out after 0.001 min waiting for required checks on c7: not reported yet: gitleaks',
+    ]);
+  });
+
+  it('reads required checks from classic branch protection too', async () => {
+    const result = await runWithGitHub(
+      { tickets },
+      {
+        required: [],
+        classic: ['lint'],
+        checks: {
+          'polesar/7': [
+            [{ name: 'check', bucket: 'pass' }],
+            [
+              { name: 'check', bucket: 'pass' },
+              { name: 'lint', bucket: 'pass' },
+            ],
+          ],
+        },
+      }
     );
+
+    expect(result.exitCode).toBe(0);
+    expect(
+      commands(result.calls).filter(([, , sub]) => sub === 'checks')
+    ).toHaveLength(2);
+  });
+
+  it('stops with what to do when the base branch requires no checks, so a repo without branch protection never looks green', async () => {
+    const result = await runWithGitHub({ tickets }, { required: [] });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toBe(
+      "polesar: main requires no status checks, so the gate can't tell green from untested. Require status checks on main (a ruleset or branch protection), then run polesar loop again.\n"
+    );
+    expect(commands(result.calls).some(([, , sub]) => sub === 'checks')).toBe(
+      false
+    );
+    expect(
+      writes(result.calls).filter(({ port }) => port === 'tracker')
+    ).toEqual([]);
+  });
+
+  it('falls back to the check description and link when the failed run cannot be read', async () => {
+    const result = await runWithGitHub(
+      { tickets },
+      {
+        checks: {
+          'polesar/7': [
+            [failedTest],
+            [failedTest],
+            [{ ...failedTest, bucket: 'pass', link: `${RUN}/11/job/24` }],
+          ],
+        },
+        fail: { 'run view': 'HTTP 502: Bad Gateway' },
+      }
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain(
+      `flaky gate: required checks failed on c7: check (CI) failed (${RUN}/11/job/22)`
+    );
+  });
+
+  it('stops without closing the ticket when GitHub only queues the merge', async () => {
+    const result = await runWithGitHub({ tickets }, { queued: true });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toBe(
+      'polesar: PR #100 (polesar/7) is OPEN, not merged: GitHub may have added it to a merge queue. Once it merges, GitHub closes the ticket; run polesar loop again after.\n'
+    );
+    expect(
+      writes(result.calls).filter(({ port }) => port === 'tracker')
+    ).toEqual([]);
   });
 
   it('stops with what to do when GitHub refuses the merge, leaving the ticket open', async () => {

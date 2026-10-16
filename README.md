@@ -44,7 +44,7 @@ The Tracker contract tests check the GitHub adapter against the fake tracker use
 
 ### The gate
 
-After review, `polesar loop` pushes `polesar/<n>` to `origin` and opens a pull request for it (or refreshes the body of the one already open). The PR body is rendered from a template: a closing reference to the ticket, the evidence and any non-blocking findings. polesar then waits for the PR's required checks on the commit it pushed, so the base branch's branch protection must require status checks; without them the gate times out red. The wait is capped by `gate.timeoutMinutes` (default 30) in `polesar.json`:
+After review, `polesar loop` pushes `polesar/<n>` to `origin` and opens a pull request for it (or refreshes the body of the one already open). The PR body is rendered from a template: a closing reference to the ticket, the evidence and any non-blocking findings. polesar then waits for the PR's required checks on the commit it pushed, read from the base branch's rulesets and classic branch protection, and isn't green until every one of them has reported and passed. A base branch that requires no checks stops the loop with exit 1 and what to configure. A timeout escalates the ticket to `ready-for-human` straight away: waiting is no failure to rerun or send back to the implementer. The wait is capped by `gate.timeoutMinutes` (default 30) in `polesar.json`:
 
 ```json
 { "gate": { "timeoutMinutes": 30 } }

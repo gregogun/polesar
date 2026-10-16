@@ -63,8 +63,9 @@ Commands:
                    evidence, and waits for the PR's required checks, up to
                    "gate": {"timeoutMinutes": 30} in polesar.json. A red
                    gate names each failed check and the step that failed.
-                   Branch protection must require status checks, or the
-                   gate times out red.
+                   The base branch must require status checks (ruleset or
+                   branch protection); green needs every one reported and
+                   passing. A timeout escalates with no rerun or retry.
                    Blocking findings go back to the implementer (1 review
                    retry, shared with reviews of later fixes). A red gate is rerun once with no agent; green
                    with no code change is logged as a flaky gate. The

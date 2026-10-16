@@ -61,7 +61,7 @@ type Check = {
   workflow: string;
 };
 
-const CHECK_FIELDS = 'name,state,bucket,description,link,workflow';
+const CHECK_FIELDS = 'name,bucket,description,link,workflow';
 
 const isFailed = ({ bucket }: Check) =>
   bucket === 'fail' || bucket === 'cancel';
@@ -80,7 +80,13 @@ type Job = {
   steps: { name: string; conclusion: string }[];
 };
 
-type PullRequest = { number: number; head: string; commits: string[] };
+type PullRequest = {
+  number: number;
+  head: string;
+  commits: string[];
+  /** The branch it merges into. */
+  base: string;
+};
 
 const short = (commit: string) => commit.slice(0, 7);
 
@@ -197,12 +203,22 @@ export class GitHubGate implements Gate {
         `GitHub would not merge PR #${pr} (${branch}): ${failure(merged)}\nBranch protection applies to polesar too: see the PR on GitHub, then run polesar loop again.`
       );
     }
+    // gh exits 0 when it only adds the PR to a merge queue: the loop mustn't close the ticket then.
+    const { state } = JSON.parse(
+      await this.#gh(['pr', 'view', String(pr), '--json', 'state'])
+    ) as { state: string };
+    if (state !== 'MERGED') {
+      throw new GateError(
+        `PR #${pr} (${branch}) is ${state}, not merged: GitHub may have added it to a merge queue. Once it merges, GitHub closes the ticket; run polesar loop again after.`
+      );
+    }
   }
 
   /**
-   * Polls until GitHub shows the PR at `head` and every required check on it
-   * has finished, or the timeout. Checks whose links are in `stale` are the
-   * failures just rerun, not yet replaced by their new runs.
+   * Polls until GitHub shows the PR at `head`, every check its base branch
+   * requires has reported and every required check has finished, or the
+   * timeout. Checks whose links are in `stale` are the failures just rerun,
+   * not yet replaced by their new runs.
    */
   async #wait(
     pr: number,
@@ -210,8 +226,10 @@ export class GitHubGate implements Gate {
     stale: Set<string>
   ): Promise<GateResult> {
     const deadline = Date.now() + this.#timeoutMinutes * 60_000;
+    let required: string[] | undefined;
     for (;;) {
       const view = await this.#view(pr);
+      required ??= await this.#required(view.base);
       const checks =
         view.head === head
           ? (await this.#checks(pr)).map((check) =>
@@ -220,7 +238,7 @@ export class GitHubGate implements Gate {
           : undefined;
       const done =
         checks !== undefined &&
-        checks.length > 0 &&
+        required.every((name) => checks.some((check) => check.name === name)) &&
         checks.every((check) => isFailed(check) || isPassed(check));
       if (done) {
         const failed = checks.filter(isFailed);
@@ -236,7 +254,8 @@ export class GitHubGate implements Gate {
       if (Date.now() >= deadline) {
         return {
           green: false,
-          summary: `timed out after ${this.#timeoutMinutes} min waiting for required checks on ${short(head)}: ${await this.#describeUnfinished(view, head, checks)}`,
+          timedOut: true,
+          summary: `timed out after ${this.#timeoutMinutes} min waiting for required checks on ${short(head)}: ${await this.#describeUnfinished({ view, head, checks, required })}`,
           commits: view.commits,
         };
       }
@@ -244,23 +263,70 @@ export class GitHubGate implements Gate {
     }
   }
 
-  async #describeUnfinished(
-    view: PullRequest,
-    head: string,
-    checks: Check[] | undefined
-  ) {
+  async #describeUnfinished({
+    view,
+    head,
+    checks,
+    required,
+  }: {
+    view: PullRequest;
+    head: string;
+    checks: Check[] | undefined;
+    required: string[];
+  }) {
     if (checks === undefined) {
       return `GitHub shows the PR at ${short(view.head)}, not ${short(head)}`;
     }
-    if (checks.length === 0) {
-      return 'no required checks reported; require status checks on the base branch with branch protection';
-    }
-    const running = checks.filter(({ bucket }) => bucket === 'pending');
+    const running = checks.filter(
+      (check) => !isFailed(check) && !isPassed(check)
+    );
+    const missing = required.filter(
+      (name) => !checks.some((check) => check.name === name)
+    );
     const failed = checks.filter(isFailed);
     return [
-      `still running: ${running.map(({ name }) => name).join(', ')}`,
+      ...(running.length > 0
+        ? [`still running: ${running.map(({ name }) => name).join(', ')}`]
+        : []),
+      ...(missing.length > 0
+        ? [`not reported yet: ${missing.join(', ')}`]
+        : []),
       ...(failed.length > 0 ? [await this.#describe(failed)] : []),
     ].join('; ');
+  }
+
+  /**
+   * The status checks `base` requires, from its rulesets and its classic
+   * branch protection. None is a setup error: the gate could never tell
+   * green from untested.
+   */
+  async #required(base: string): Promise<string[]> {
+    const rules = JSON.parse(
+      await this.#gh(['api', `repos/{owner}/{repo}/rules/branches/${base}`])
+    ) as {
+      type: string;
+      parameters?: { required_status_checks?: { context: string }[] };
+    }[];
+    // The branch itself, not its protection endpoint: reading that needs admin rights.
+    const branch = JSON.parse(
+      await this.#gh(['api', `repos/{owner}/{repo}/branches/${base}`])
+    ) as { protection?: { required_status_checks?: { contexts?: string[] } } };
+    const names = new Set([
+      ...rules
+        .filter(({ type }) => type === 'required_status_checks')
+        .flatMap(
+          ({ parameters }) =>
+            parameters?.required_status_checks?.map(({ context }) => context) ??
+            []
+        ),
+      ...(branch.protection?.required_status_checks?.contexts ?? []),
+    ]);
+    if (names.size === 0) {
+      throw new GateError(
+        `${base} requires no status checks, so the gate can't tell green from untested. Require status checks on ${base} (a ruleset or branch protection), then run polesar loop again.`
+      );
+    }
+    return [...names];
   }
 
   /** Each failed check, briefly: its name, the step that failed (for GitHub Actions) or its description, and its link. */
@@ -268,8 +334,18 @@ export class GitHubGate implements Gate {
     const jobs = new Map<string, Job[]>();
     const jobsOf = async (id: string) => {
       if (!jobs.has(id)) {
-        const output = await this.#gh(['run', 'view', id, '--json', 'jobs']);
-        jobs.set(id, (JSON.parse(output) as { jobs: Job[] }).jobs);
+        const result = await run(
+          'gh',
+          ['run', 'view', id, '--json', 'jobs'],
+          this.#cwd
+        );
+        // Unreadable, the run's failed step is left out: the description and link still say enough.
+        jobs.set(
+          id,
+          result.code === 0
+            ? (JSON.parse(result.stdout) as { jobs: Job[] }).jobs
+            : []
+        );
       }
       return jobs.get(id)!;
     };
@@ -305,13 +381,14 @@ export class GitHubGate implements Gate {
       ['pr', 'checks', String(pr), '--required', '--json', CHECK_FIELDS],
       this.#cwd
     );
-    // gh exits 8 while checks are pending and 1 when one failed, still printing them.
+    // With --json, gh prints the checks and exits 0 whatever their state; with none reported yet it exits 1.
     try {
       const checks: unknown = JSON.parse(result.stdout);
       if (Array.isArray(checks)) return checks as Check[];
     } catch {
       // Not JSON: an error, or no checks yet.
     }
+    // Required checks are known from the base branch: none reported yet means they're on their way.
     if (/no (required )?checks reported/.test(result.stderr)) return [];
     throw new GateError(
       `couldn't read the checks on PR #${pr}: ${failure(result)}\nCheck \`gh auth status\`.`
@@ -319,13 +396,24 @@ export class GitHubGate implements Gate {
   }
 
   async #view(pr: number): Promise<PullRequest> {
-    const { headRefOid, commits } = JSON.parse(
-      await this.#gh(['pr', 'view', String(pr), '--json', 'headRefOid,commits'])
-    ) as { headRefOid: string; commits: { oid: string }[] };
+    const { headRefOid, commits, baseRefName } = JSON.parse(
+      await this.#gh([
+        'pr',
+        'view',
+        String(pr),
+        '--json',
+        'headRefOid,commits,baseRefName',
+      ])
+    ) as {
+      headRefOid: string;
+      commits: { oid: string }[];
+      baseRefName: string;
+    };
     return {
       number: pr,
       head: headRefOid,
       commits: commits.map(({ oid }) => oid),
+      base: baseRefName,
     };
   }
 

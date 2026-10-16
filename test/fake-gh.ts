@@ -7,7 +7,7 @@
  * committed to from POLESAR_FAKE_STATE, so the PR holds what was committed.
  */
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
-import type { GhScript, ScriptedCheck } from './gh-script.ts';
+import type { GhScript } from './gh-script.ts';
 
 const {
   POLESAR_GH_FAKE = '',
@@ -22,6 +22,8 @@ type GhState = {
   nextPr: number;
   /** `gh pr checks` calls so far, per branch. */
   checks: Record<string, number>;
+  /** PRs `gh pr merge` was run on. */
+  merged: number[];
 };
 
 const readJson = <T>(file: string, fallback: T): T => {
@@ -37,6 +39,7 @@ const state = readJson<GhState>(POLESAR_GH_STATE, {
   prs: { ...script.openPrs },
   nextPr: 100,
   checks: {},
+  merged: [],
 });
 const save = () => writeFileSync(POLESAR_GH_STATE, JSON.stringify(state));
 
@@ -87,13 +90,6 @@ const git = () => {
   fail(`fake git: unscripted command: git ${args.join(' ')}`);
 };
 
-const checksExit = (checks: ScriptedCheck[]) =>
-  checks.some(({ bucket }) => bucket === 'fail' || bucket === 'cancel')
-    ? 1
-    : checks.some(({ bucket }) => bucket === 'pending')
-      ? 8
-      : 0;
-
 const gh = () => {
   const failure = scriptedFailure();
   if (failure !== undefined) fail(failure);
@@ -113,12 +109,55 @@ const gh = () => {
   if (command === 'pr edit') return;
   if (command === 'pr view') {
     const commits = commitsOf(branchOf(args[2]));
+    const merged = state.merged.includes(Number(args[2])) && !script.queued;
     return out(
       JSON.stringify({
         headRefOid: commits.at(-1) ?? '',
         commits: commits.map((oid) => ({ oid })),
+        baseRefName: 'main',
+        state: merged ? 'MERGED' : 'OPEN',
       })
     );
+  }
+  if (args[0] === 'api') {
+    const endpoint = args[1] ?? '';
+    if (endpoint === 'repos/{owner}/{repo}/rules/branches/main') {
+      const contexts = script.required ?? ['check'];
+      return out(
+        JSON.stringify(
+          contexts.length === 0
+            ? []
+            : [
+                { type: 'pull_request', parameters: {} },
+                {
+                  type: 'required_status_checks',
+                  parameters: {
+                    required_status_checks: contexts.map((context) => ({
+                      context,
+                    })),
+                  },
+                },
+              ]
+        )
+      );
+    }
+    if (endpoint === 'repos/{owner}/{repo}/branches/main') {
+      return out(
+        JSON.stringify({
+          name: 'main',
+          protection:
+            script.classic === undefined
+              ? { enabled: false }
+              : {
+                  enabled: true,
+                  required_status_checks: {
+                    contexts: script.classic,
+                    checks: script.classic.map((context) => ({ context })),
+                  },
+                },
+        })
+      );
+    }
   }
   if (command === 'pr checks') {
     const branch = branchOf(args[2]);
@@ -133,19 +172,22 @@ const gh = () => {
       return fail(`no required checks reported on the '${branch}' branch`);
     }
     const checks = poll.map((check) => ({
-      state: check.bucket === 'pass' ? 'SUCCESS' : check.bucket.toUpperCase(),
       description: '',
       link: '',
       workflow: '',
       ...check,
     }));
-    out(JSON.stringify(checks));
-    process.exit(checksExit(poll));
+    // With --json, gh exits 0 whatever the checks' state.
+    return out(JSON.stringify(checks));
   }
   if (command === 'run view') {
     return out(JSON.stringify(script.runs?.[args[2] ?? ''] ?? { jobs: [] }));
   }
-  if (command === 'run rerun' || command === 'pr merge') return;
+  if (command === 'pr merge') {
+    state.merged.push(Number(args[2]));
+    return save();
+  }
+  if (command === 'run rerun') return;
   fail(`fake gh: unscripted command: gh ${args.join(' ')}`);
 };
 

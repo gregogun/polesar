@@ -9,7 +9,6 @@ import type { RecordedCall } from './recording.ts';
 export type ScriptedCheck = {
   name: string;
   bucket: 'pass' | 'fail' | 'pending' | 'skipping' | 'cancel';
-  state?: string;
   description?: string;
   link?: string;
   workflow?: string;
@@ -40,7 +39,13 @@ export type GhScript = {
       }[];
     }
   >;
-  /** Commands that fail, by program subcommand (e.g. `pr merge`, `push`), with their stderr. */
+  /** Required status checks in main's rulesets. Unscripted: `check`. */
+  required?: string[];
+  /** Required status checks in main's classic branch protection. Unscripted: main isn't protected. */
+  classic?: string[];
+  /** `gh pr merge` only adds the PR to a merge queue, leaving it open. */
+  queued?: true;
+  /** Commands that fail, by program subcommand (e.g. `pr merge`, `push`, `run view`), with their stderr. */
   fail?: Record<string, string>;
 };
 
