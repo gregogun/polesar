@@ -8,11 +8,19 @@ export type Feedback =
   /** The gate's summary of what still fails after a free rerun. */
   | { gate: string };
 
+/** How hard Claude Code thinks (its --effort levels). */
+export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type Effort = (typeof EFFORTS)[number];
+
 export type ImplementInput = {
   ticket: TicketSpec;
   branch: string;
   /** Absent on the first run. */
   feedback?: Feedback;
+  /** The ticket's model:<name> label; absent for the executor's default. */
+  model?: string;
+  /** The ticket's effort:<level> label; absent for the executor's default. */
+  effort?: Effort;
   /** The turns the ticket has left under its per-ticket cap; the agent stops there. */
   maxTurns: number;
 };
@@ -53,6 +61,8 @@ export type StandardsDoc = { path: string; content: string };
 /** Everything the reviewer sees: the result, never the story about it. */
 export type ReviewInput = {
   ticket: TicketSpec;
+  /** The branch under review, which the reviewer reads but never writes. */
+  branch: string;
   diff: string;
   evidence: string;
   standards: StandardsDoc[];
@@ -68,7 +78,11 @@ export type Finding = {
   summary: string;
 };
 
-export type Review = { findings: Finding[] } & Turns;
+export type Review = {
+  findings: Finding[];
+  /** The reviewer changed the branch or its working tree; the executor discarded what it did, but its findings can't be trusted. */
+  wroteToBranch?: boolean;
+} & Turns;
 
 /**
  * The plan's rate limit cut an agent run short. Whatever it did is redone
@@ -85,6 +99,16 @@ export type RateLimited = {
 export type Executor = {
   /** Runs the implementer on `branch`. It commits there and never merges. */
   implement(input: ImplementInput): Promise<Implementation | RateLimited>;
-  /** Runs the read-only reviewer. */
+  /** Runs the read-only reviewer on `branch`. */
   review(input: ReviewInput): Promise<Review | RateLimited>;
+  /** Releases whatever the runs held (sandboxes), once the loop is done with them. */
+  close?(): Promise<void>;
 };
+
+/**
+ * An agent run failed in a way polesar can't explain (the sandbox wouldn't
+ * start, the agent crashed). The loop stops without judging the ticket.
+ */
+export class ExecutorError extends Error {
+  override name = 'ExecutorError';
+}

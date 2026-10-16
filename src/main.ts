@@ -5,7 +5,7 @@ import { preToolUseHook, stopHook, type HookResponse } from './hook.ts';
 import { ConfigError } from './config.ts';
 import { describeFrontier, findFrontier } from './frontier.ts';
 import type { Executor } from './executor.ts';
-import type { Gate } from './gate.ts';
+import { GateError, type Gate } from './gate.ts';
 import type { Usage } from './usage.ts';
 import { describeInstall, installHooks } from './install-hooks.ts';
 import { LoopError, planLoop, runLoop } from './loop.ts';
@@ -45,17 +45,39 @@ Commands:
                    2 bad usage.
   loop [--dry-run] [--json]
                    Work the frontier unattended, one ticket at a time: the
-                   implementer commits on polesar/<n> plus an evidence file,
-                   a read-only reviewer judges the ticket, diff, evidence and
-                   standards docs (AGENTS.md, CLAUDE.md, GLOSSARY.md,
-                   docs/adr/), then the gate runs. Blocking findings go back
-                   to the implementer (1 review retry, shared with reviews of
-                   later fixes). A red gate is rerun once with no agent; green
-                   with no code change is logged as a flaky gate. Still red,
+                   implementer (Claude Code, sonnet at medium effort; labels
+                   model:<name> and effort:low|medium|high|xhigh|max override
+                   them per ticket) commits on polesar/<n> and writes an
+                   evidence file, .polesar/evidence.md, never committed. A
+                   read-only reviewer (opus, medium effort) judges the
+                   ticket, diff, evidence and standards docs (AGENTS.md,
+                   CLAUDE.md, GLOSSARY.md, docs/adr/); one that changes the
+                   branch has its changes discarded and escalates. Both run
+                   in one Docker sandbox per ticket via Sandcastle (its image
+                   from \`npx @ai-hero/sandcastle init\`), on a throwaway
+                   clone of the repo, with ~/.claude/skills mounted
+                   read-only. Only the branch's new commits come back to the
+                   repo, as a git bundle. Then the gate runs: polesar
+                   pushes polesar/<n> to origin, opens (or refreshes) its PR
+                   with a body that closes the ticket and holds the
+                   evidence, and waits for the PR's required checks, up to
+                   "gate": {"timeoutMinutes": 30} in polesar.json. A red
+                   gate names each failed check and the step that failed.
+                   The base branch must require status checks (ruleset or
+                   branch protection); green needs every one reported and
+                   passing. A timeout escalates with no rerun or retry.
+                   Blocking findings go back to the implementer (1 review
+                   retry, shared with reviews of later fixes). A red gate is rerun once with no agent; green
+                   with no code change is logged as a flaky gate. The
+                   rerun re-triggers only the failed GitHub Actions jobs. Still red,
                    it goes back to the implementer with the failure summary
                    (2 CI retries), and only the new change is reviewed.
                    Non-blocking findings go in the PR body and the log.
-                   polesar merges only when the gate is green, no finding
+                   Evidence over 60,000 characters is cut short in the PR
+                   body and comments; the full file is saved under
+                   POLESAR_HOME/evidence/.
+                   polesar merges, through GitHub so branch protection
+                   applies, only when the gate is green, no finding
                    blocks, every commit was reviewed and the evidence exists,
                    then closes the ticket with an evidence comment. A branch
                    that modifies or deletes a protected file (existing tests,
@@ -78,18 +100,22 @@ Commands:
                    ticket starts. A rate limit pauses the run with no retry
                    used and no label changed; run polesar loop after the
                    reset to resume the ticket where it stopped, budget
-                   permitting.
+                   permitting. An agent run that fails any other way (the
+                   sandbox won't start, the agent crashes) stops the run the
+                   same way, with the ticket untouched; run polesar loop
+                   again to resume it.
                    Stops when nothing is left, naming ready-for-human tickets
                    blocking AFK work. --dry-run shows the planned transitions
                    without running agents or changing anything. --json gives
                    {outcomes, humanBlockers, stopped} ({planned,
                    humanBlockers} with --dry-run); stopped.reason is done,
-                   budget (with rule and detail) or paused (with until and
-                   ticket).
+                   budget (with rule and detail), paused (with until and
+                   ticket) or failed (with ticket and detail).
                    Exit: 0 every ticket merged (or dry run), 1 a ticket was
-                   escalated or GitHub couldn't be read, 2 bad usage or
-                   config, 3 stopped early by the budget or paused by a
-                   rate limit.
+                   escalated, an agent run failed, GitHub couldn't be
+                   read, or the branch couldn't be pushed, its PR opened
+                   or merged, 2 bad usage or config, 3 stopped early by the
+                   budget or paused by a rate limit.
   verdict <ticket> approved|rejected [--dry-run] [--json]
                    Record your verdict on polesar's latest escalation of a
                    ticket, as a comment on it for telemetry: approved if the
@@ -140,7 +166,13 @@ Options:
 
 Environment:
   POLESAR_HOME     Where polesar keeps usage readings, the loop's weekly
-                   usage and paused runs (default: ~/.polesar)
+                   usage, paused runs, agent logs, full evidence files and
+                   the sandboxes' clones (default: ~/.polesar)
+  CLAUDE_CODE_OAUTH_TOKEN
+                   The token polesar loop's agents run on, from \`claude
+                   setup-token\`. It is the only secret that enters the
+                   sandbox: polesar refuses to run if .sandcastle/.env
+                   passes any other key, so no GitHub token gets in.
 `;
 
 const help = { type: 'boolean', short: 'h' } as const;
@@ -233,12 +265,16 @@ export type Ports = {
   home: string;
 };
 
-/** Runs `action`, exiting 1 with the message when the tracker fails or the loop can't run. */
+/** Runs `action`, exiting 1 with the message when the tracker or gate fails or the loop can't run. */
 const orExitOnPortError = async <T>(action: () => Promise<T>) => {
   try {
     return await action();
   } catch (error) {
-    if (!(error instanceof TrackerError || error instanceof LoopError)) {
+    if (!(
+      error instanceof TrackerError ||
+      error instanceof GateError ||
+      error instanceof LoopError
+    )) {
       throw error;
     }
     process.stderr.write(`polesar: ${error.message}\n`);
@@ -281,26 +317,33 @@ export const main = async (argv: string[], ports: Ports) => {
       orExitOnPortError(async () => {
         const loopPorts = {
           tracker: await ports.tracker(),
-          executor: await ports.executor(),
+          // The gate first: a missing gate shouldn't wait on the executor's setup.
           gate: await ports.gate(),
+          executor: await ports.executor(),
           usage: await ports.usage(),
         };
-        return runLoop(loopPorts, {
-          cwd: process.cwd(),
-          home: ports.home,
-          now: ports.now,
-          onOutcome: (outcome) => {
-            if (!values.json) process.stdout.write(describeOutcome(outcome));
-          },
-        });
+        try {
+          return await runLoop(loopPorts, {
+            cwd: process.cwd(),
+            home: ports.home,
+            now: ports.now,
+            onOutcome: (outcome) => {
+              if (!values.json) process.stdout.write(describeOutcome(outcome));
+            },
+          });
+        } finally {
+          await loopPorts.executor.close?.();
+        }
       })
     );
     writeResult(values.json, result, runSummary);
-    process.exitCode = !result.outcomes.every((outcome) => outcome.merged)
-      ? 1
-      : result.stopped.reason === 'done'
-        ? 0
-        : 3;
+    process.exitCode =
+      !result.outcomes.every((outcome) => outcome.merged) ||
+      result.stopped.reason === 'failed'
+        ? 1
+        : result.stopped.reason === 'done'
+          ? 0
+          : 3;
   } else if (command === 'verdict') {
     const { values, positionals } = parseCommandArgsOrExit(
       rest,

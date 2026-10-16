@@ -42,6 +42,18 @@ Lists the frontier: the open `ready-for-agent` tickets whose blockers are all cl
 
 The Tracker contract tests check the GitHub adapter against the fake tracker used in tests. They're opt-in and need a throwaway repo you can create and delete issues in: `POLESAR_CONTRACT_REPO=you/scratch-repo pnpm vitest run test/tracker-contract.test.ts`.
 
+### The gate
+
+After review, `polesar loop` pushes `polesar/<n>` to `origin` and opens a pull request for it (or refreshes the body of the one already open). The PR body is rendered from a template: a closing reference to the ticket, the evidence and any non-blocking findings. polesar then waits for the PR's required checks on the commit it pushed, read from the base branch's rulesets and classic branch protection, and isn't green until every one of them has reported and passed. A base branch that requires no checks stops the loop with exit 1 and what to configure. A timeout escalates the ticket to `ready-for-human` straight away: waiting is no failure to rerun or send back to the implementer. The wait is capped by `gate.timeoutMinutes` (default 30) in `polesar.json`:
+
+```json
+{ "gate": { "timeoutMinutes": 30 } }
+```
+
+A red gate is summarized briefly: each failed check, its workflow and the step that failed, with a link. The one free rerun re-triggers only the failed GitHub Actions jobs (`gh run rerun --failed`); checks that aren't Actions jobs aren't rerun. polesar merges through GitHub (`gh pr merge --merge --match-head-commit`), so branch protection applies to it too, and GitHub closes the ticket from the PR's closing reference. If the push, the PR or the merge fails, the loop stops with exit 1 and the ticket keeps its label.
+
+The gate contract test checks the adapter against real GitHub, with real Actions runs, so it takes minutes. It's opt-in and needs a throwaway repo whose `main` branch protection requires a status check named `contract` and no reviews; the test brings its own workflow: `POLESAR_GATE_CONTRACT_REPO=you/scratch-repo pnpm vitest run test/gate-contract.test.ts`.
+
 ### Protected paths
 
 `polesar loop` escalates a ticket to `ready-for-human`, even with a green gate and a clean review, when its branch modifies or deletes a protected file: an existing test, verify, lint, format or typecheck config, hook config or a CI workflow ([ADR 0005](docs/adr/0005-protected-paths-escalate-even-when-green.md)). Adding files, new tests included, never escalates. The escalation comment names each protected file touched and the pattern it matched. The default patterns are in [`src/protected-paths.ts`](src/protected-paths.ts). A repo can add patterns, or remove defaults, in `polesar.json`:

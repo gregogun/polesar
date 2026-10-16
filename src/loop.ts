@@ -1,11 +1,14 @@
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
-import type {
-  Executor,
-  Finding,
-  RateLimited,
-  StandardsDoc,
-  TicketSpec,
+import {
+  EFFORTS,
+  ExecutorError,
+  type Effort,
+  type Executor,
+  type Finding,
+  type RateLimited,
+  type StandardsDoc,
+  type TicketSpec,
 } from './executor.ts';
 import {
   frontierOf,
@@ -13,6 +16,7 @@ import {
   READY_FOR_HUMAN,
   type HumanBlocker,
 } from './frontier.ts';
+import { EvidenceFiles } from './evidence.ts';
 import { Books, loadBudget, type Budget, type BudgetStop } from './budget.ts';
 import type { Gate, GateResult } from './gate.ts';
 import { PausedRuns, type PausedRun, type TicketState } from './paused-run.ts';
@@ -45,7 +49,9 @@ export type Stopped =
   /** A budget rule, or usage readings it can't trust, kept the next ticket from starting. */
   | ({ reason: 'budget' } & BudgetStop)
   /** A rate limit cut an agent run short; the ticket picks up from there in a run after `until`. */
-  | { reason: 'paused'; until: string; ticket: number };
+  | { reason: 'paused'; until: string; ticket: number }
+  /** An agent run failed in a way polesar can't explain; the ticket picks up from there in the next run. */
+  | { reason: 'failed'; ticket: number; detail: string };
 
 export type LoopResult = {
   outcomes: Outcome[];
@@ -58,22 +64,6 @@ export type LoopResult = {
 export class LoopError extends Error {
   override name = 'LoopError';
 }
-
-/** Stand-ins for ports with no real adapter yet, so `polesar loop` says so rather than running half a loop. */
-export const unavailable = {
-  executor: () =>
-    Promise.reject<never>(
-      new LoopError(
-        'polesar loop has no executor yet: the Sandcastle adapter is not built (gregogun/polesar#13). Run `polesar loop --dry-run` to see what it would do.'
-      )
-    ),
-  gate: () =>
-    Promise.reject<never>(
-      new LoopError(
-        'polesar loop has no gate yet: the CI adapter is not built (gregogun/polesar#12). Run `polesar loop --dry-run` to see what it would do.'
-      )
-    ),
-};
 
 /** An evidence file that's missing or blank proves nothing. */
 const hasEvidence = (evidence: string | null): evidence is string =>
@@ -157,12 +147,34 @@ type Policy = {
   standards: StandardsDoc[];
   protectedPaths: string[];
   budget: Budget;
+  evidenceFiles: EvidenceFiles;
 };
 
 const sameCommits = (a: string[], b: string[]) =>
   a.length === b.length && a.every((commit, index) => commit === b[index]);
 
 const branchFor = (ticket: number) => `polesar/${ticket}`;
+
+const isEffort = (value: string): value is Effort =>
+  (EFFORTS as readonly string[]).includes(value);
+
+/**
+ * The implementer overrides a ticket's labels ask for: model:<name> and
+ * effort:<level>. An effort level Claude Code doesn't have is ignored.
+ */
+const implementerOverrides = (labels: string[]) => {
+  const valueOf = (prefix: string) =>
+    labels
+      .find((label) => label.startsWith(prefix))
+      ?.slice(prefix.length)
+      .trim();
+  const model = valueOf('model:');
+  const effort = valueOf('effort:');
+  return {
+    ...(model && { model }),
+    ...(effort !== undefined && isEffort(effort) && { effort }),
+  };
+};
 
 /** How many times blocking findings may send work back to the implementer, counting reviews of fixes. */
 const REVIEW_RETRIES = 1;
@@ -210,11 +222,14 @@ const freshState = (): TicketState => ({
  */
 const workTicket = async (
   { tracker, executor, gate }: LoopPorts,
-  { standards, protectedPaths, budget }: Policy,
-  { number, title, body }: Ticket,
-  state: TicketState = freshState()
+  { standards, protectedPaths, budget, evidenceFiles }: Policy,
+  { number, title, body, labels }: Ticket,
+  state: TicketState
 ): Promise<Outcome | Paused> => {
   const ticket: TicketSpec = { number, title, body };
+  const overrides = implementerOverrides(labels);
+  const postable = (evidence: string) =>
+    evidenceFiles.postable(number, evidence);
   const branch = branchFor(number);
   const stop = async (reasons: string[]): Promise<Outcome> => {
     await escalate(tracker, number, {
@@ -223,7 +238,8 @@ const workTicket = async (
       reasons,
       touched: state.touched,
       trail: state.trail,
-      evidence: state.lastEvidence,
+      evidence:
+        state.lastEvidence === null ? null : await postable(state.lastEvidence),
     });
     return {
       number,
@@ -264,6 +280,7 @@ const workTicket = async (
         ticket,
         branch,
         ...(feedback && { feedback }),
+        ...overrides,
         maxTurns: budget.ticketTurns - state.turns,
       });
       if ('rateLimited' in implementation) return pause(implementation);
@@ -292,6 +309,7 @@ const workTicket = async (
     const { committed, diff, evidence } = state.next;
     const review = await executor.review({
       ticket,
+      branch,
       diff,
       evidence,
       standards,
@@ -301,6 +319,11 @@ const workTicket = async (
     if ('rateLimited' in review) return pause(review);
     state.turns += review.turns;
     const { findings } = review;
+    if (review.wroteToBranch) {
+      return stop([
+        'the reviewer wrote to the branch; polesar discarded its changes',
+      ]);
+    }
     // A review cut short may have missed what blocks: its findings can't clear the branch.
     if (review.capHit) return stop([capHit()]);
     state.reviewed.push(...committed);
@@ -329,15 +352,17 @@ const workTicket = async (
       branch,
       prBody: prBody({
         ticket: number,
-        evidence,
+        evidence: await postable(evidence),
         nonBlocking: state.nonBlocking,
       }),
     });
     state.trail.push({ step: 'gate', result: checked });
+    if (checked.timedOut) return stop([`gate timed out: ${checked.summary}`]);
     if (!checked.green) {
       // A free rerun first: a flaky gate shouldn't cost tokens or a CI retry.
       const rerun = await gate.rerun({ ticket: number, branch });
       state.trail.push({ step: 'rerun', result: rerun });
+      if (rerun.timedOut) return stop([`gate timed out: ${rerun.summary}`]);
       if (!sameCommits(rerun.commits, checked.commits)) {
         return stop([
           `gate rerun ran on ${rerun.commits.join(', ') || 'no commits'}, not ${checked.commits.join(', ')}`,
@@ -372,7 +397,7 @@ const workTicket = async (
       number,
       evidenceComment({
         branch,
-        evidence,
+        evidence: await postable(evidence),
         gateSummary: checked.summary,
         reviewed: state.reviewed,
         nonBlocking: state.nonBlocking,
@@ -418,6 +443,7 @@ export const runLoop = async (
     standards: await readStandards(cwd),
     protectedPaths: await loadProtectedPaths(cwd),
     budget: await loadBudget(cwd),
+    evidenceFiles: new EvidenceFiles(home, cwd),
   };
   const pausedRuns = new PausedRuns(home, cwd);
   const paused = await pausedRuns.load();
@@ -437,18 +463,36 @@ export const runLoop = async (
     }
     return { outcomes, humanBlockers, stopped };
   };
-  /** Works `ticket` from `state`; says how the run stopped if a rate limit paused it. */
+  /** Works `ticket` from `state`; says how the run stopped if a rate limit paused it or an agent run failed. */
   const work = async (
     ticket: Ticket,
-    state?: TicketState
+    resumed?: TicketState
   ): Promise<Stopped | undefined> => {
     tried.add(ticket.number);
-    const result = await workTicket(ports, policy, ticket, state);
+    const state = resumed ?? freshState();
+    let result: Awaited<ReturnType<typeof workTicket>>;
+    try {
+      result = await workTicket(ports, policy, ticket, state);
+    } catch (error) {
+      if (!(error instanceof ExecutorError)) throw error;
+      // Not the ticket's fault, as far as polesar can tell: keep its place, as a rate limit would, resumable at once.
+      state.trail.push({
+        step: 'failed',
+        detail: error.message,
+        before: state.next.step,
+      });
+      toResume = {
+        ticket: ticket.number,
+        until: new Date(now()).toISOString(),
+        state,
+      };
+      return { reason: 'failed', ticket: ticket.number, detail: error.message };
+    }
     if ('until' in result) {
       toResume = { ticket: ticket.number, ...result };
       return { reason: 'paused', until: result.until, ticket: ticket.number };
     }
-    if (state !== undefined) await pausedRuns.clear();
+    if (resumed !== undefined) await pausedRuns.clear();
     outcomes.push(result);
     onOutcome(result);
     return undefined;

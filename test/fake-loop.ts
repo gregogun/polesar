@@ -1,15 +1,16 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import type {
-  Executor,
-  ImplementInput,
-  Implementation,
-  RateLimited,
-  Review,
-  ReviewInput,
+import {
+  ExecutorError,
+  type Executor,
+  type ImplementInput,
+  type Implementation,
+  type RateLimited,
+  type Review,
+  type ReviewInput,
 } from '../src/executor.ts';
 import type { Gate, GateInput, GateResult } from '../src/gate.ts';
-import type { LoopScript, Scripted } from './loop-script.ts';
+import type { Failed, LoopScript, Scripted } from './loop-script.ts';
 
 /**
  * What the fakes remember: the branches the fake implementer has committed
@@ -83,15 +84,22 @@ const rateLimit = (
 ): RateLimited | undefined =>
   scripted?.rateLimited && { rateLimited: scripted.rateLimited };
 
+/** Throws as the real executor does when a run fails in a way it can't explain. */
+const failIfScripted = (scripted: Partial<Failed> | undefined) => {
+  if (scripted?.failed !== undefined) {
+    throw new ExecutorError(scripted.failed);
+  }
+};
+
 /**
  * A scripted implementer and reviewer. Unscripted tickets succeed: each
  * implementer run adds a commit (c7, then c7.2, c7.3…) with a diff, no
  * changed files and an evidence file, and the reviewer finds nothing. A run
- * scripted as rate limited does nothing else.
+ * scripted as rate limited or failed does nothing else.
  */
 class FakeExecutor implements Executor {
-  readonly #implement: Sequence<Implementation & RateLimited>;
-  readonly #review: Sequence<Review & RateLimited>;
+  readonly #implement: Sequence<Implementation & RateLimited & Failed>;
+  readonly #review: Sequence<Review & RateLimited & Failed>;
   readonly #store: Store;
 
   constructor(script: LoopScript, store: Store) {
@@ -100,16 +108,18 @@ class FakeExecutor implements Executor {
     this.#store = store;
   }
 
-  implement({
+  async implement({
     ticket,
     branch,
   }: ImplementInput): Promise<Implementation | RateLimited> {
     const { number } = ticket;
     const { scripted, call } = this.#implement.next(number);
+    failIfScripted(scripted);
     const limited = rateLimit(scripted);
-    if (limited) return Promise.resolve(limited);
+    if (limited) return limited;
     const suffix = call === 1 ? '' : `.${call}`;
     const { branches } = this.#store.state;
+    const { failed: _, ...outcome } = scripted ?? {};
     const implementation = {
       commits: [...(branches[branch] ?? []), `c${number}${suffix}`],
       diff: `diff for #${number}${suffix}`,
@@ -118,16 +128,17 @@ class FakeExecutor implements Executor {
       transcript: `implementer transcript for #${number}`,
       turns: 1,
       capHit: false,
-      ...scripted,
+      ...outcome,
     };
     branches[branch] = implementation.commits;
     this.#store.save();
-    return Promise.resolve(implementation);
+    return implementation;
   }
 
-  review({ ticket }: ReviewInput): Promise<Review | RateLimited> {
+  async review({ ticket }: ReviewInput): Promise<Review | RateLimited> {
     const { scripted } = this.#review.next(ticket.number);
-    return Promise.resolve(
+    failIfScripted(scripted);
+    return (
       rateLimit(scripted) ?? {
         findings: [],
         turns: 1,

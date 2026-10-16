@@ -1,8 +1,11 @@
+import type { Executor } from '../src/executor.ts';
+import type { Gate } from '../src/gate.ts';
+import { GitHubGate } from '../src/github-gate.ts';
 import { GitHubTracker } from '../src/github-tracker.ts';
-import { unavailable } from '../src/loop.ts';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { main } from '../src/main.ts';
+import { SandcastleExecutor } from '../src/sandcastle-executor.ts';
 import { FileUsage } from '../src/usage.ts';
 import { loadFakeLoop } from './fake-loop.ts';
 import { loadFakeTracker } from './fake-tracker.ts';
@@ -16,6 +19,8 @@ import { recording } from './recording.ts';
  * the clock set to POLESAR_FAKE_NOW. With POLESAR_FAKE_LOG set, every call the
  * fakes receive is logged there. With POLESAR_FAKE_STATE set, the executor and
  * gate keep their branches and call counts there from one run to the next.
+ * With POLESAR_GH_FAKE set, the gate is the real GitHub gate, run against the
+ * fake `gh` and `git` that `test/gh-script.ts` puts on PATH.
  * The fakes live only here, out of the shipped bin, so nothing outside the
  * tests can swap in a made-up tracker or agent.
  */
@@ -26,6 +31,7 @@ const {
   POLESAR_FAKE_NOW,
   POLESAR_FAKE_LOG,
   POLESAR_FAKE_STATE,
+  POLESAR_GH_FAKE,
   POLESAR_HOME,
 } = process.env;
 
@@ -35,8 +41,11 @@ const now = () =>
 
 // Loaded once, on first use, so the executor and gate share one scripted branch state.
 let loop: ReturnType<typeof loadFakeLoop> | undefined;
-const fakeLoopPort = async <K extends 'executor' | 'gate'>(port: K) => {
-  if (!POLESAR_LOOP_FAKE) return unavailable[port]();
+const fakeLoopPort = async <K extends 'executor' | 'gate'>(
+  port: K,
+  real: () => Promise<{ executor: Executor; gate: Gate }[K]>
+): Promise<{ executor: Executor; gate: Gate }[K]> => {
+  if (!POLESAR_LOOP_FAKE) return real();
   loop ??= loadFakeLoop(POLESAR_LOOP_FAKE, POLESAR_FAKE_STATE);
   return recording(port, (await loop)[port], POLESAR_FAKE_LOG);
 };
@@ -50,8 +59,19 @@ await main(process.argv.slice(2), {
           POLESAR_FAKE_LOG
         )
       : new GitHubTracker(),
-  executor: () => fakeLoopPort('executor'),
-  gate: () => fakeLoopPort('gate'),
+  executor: () =>
+    fakeLoopPort('executor', () =>
+      SandcastleExecutor.create(process.cwd(), home)
+    ),
+  // With POLESAR_GH_FAKE, the real gate, on a fake gh and git, polling fast.
+  gate: async () =>
+    POLESAR_GH_FAKE
+      ? recording(
+          'gate',
+          await GitHubGate.create(process.cwd(), { pollMs: 5 }),
+          POLESAR_FAKE_LOG
+        )
+      : fakeLoopPort('gate', () => GitHubGate.create(process.cwd())),
   usage: async () =>
     POLESAR_USAGE_FAKE
       ? recording(

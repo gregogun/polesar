@@ -11,6 +11,11 @@ export type GateResult = {
   summary: string;
   /** The branch's commits the checks ran on, oldest first. */
   commits: string[];
+  /**
+   * Red because the checks didn't finish in time, not because one failed:
+   * there's nothing to rerun or fix, so the loop escalates.
+   */
+  timedOut?: true;
 };
 
 /** Runs the expensive checks for a branch and merges it. polesar's core reaches the gate only through this port. */
@@ -21,3 +26,12 @@ export type Gate = {
   /** Merges `branch` into main. Called only once the loop's merge condition holds. */
   merge(input: { ticket: number; branch: string }): Promise<void>;
 };
+
+/**
+ * The gate couldn't do what the loop asked (push, open a PR, read checks,
+ * merge); the message says what to do next. The loop stops without judging
+ * the ticket.
+ */
+export class GateError extends Error {
+  override name = 'GateError';
+}
