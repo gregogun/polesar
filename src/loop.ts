@@ -65,16 +65,6 @@ export class LoopError extends Error {
   override name = 'LoopError';
 }
 
-/** Stand-ins for ports with no real adapter yet, so `polesar loop` says so rather than running half a loop. */
-export const unavailable = {
-  gate: () =>
-    Promise.reject<never>(
-      new LoopError(
-        'polesar loop has no gate yet: the CI adapter is not built (gregogun/polesar#12). Run `polesar loop --dry-run` to see what it would do.'
-      )
-    ),
-};
-
 /** An evidence file that's missing or blank proves nothing. */
 const hasEvidence = (evidence: string | null): evidence is string =>
   evidence !== null && evidence.trim() !== '';

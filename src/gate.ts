@@ -21,3 +21,12 @@ export type Gate = {
   /** Merges `branch` into main. Called only once the loop's merge condition holds. */
   merge(input: { ticket: number; branch: string }): Promise<void>;
 };
+
+/**
+ * The gate couldn't do what the loop asked (push, open a PR, read checks,
+ * merge); the message says what to do next. The loop stops without judging
+ * the ticket.
+ */
+export class GateError extends Error {
+  override name = 'GateError';
+}

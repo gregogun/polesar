@@ -5,7 +5,7 @@ import { preToolUseHook, stopHook, type HookResponse } from './hook.ts';
 import { ConfigError } from './config.ts';
 import { describeFrontier, findFrontier } from './frontier.ts';
 import type { Executor } from './executor.ts';
-import type { Gate } from './gate.ts';
+import { GateError, type Gate } from './gate.ts';
 import type { Usage } from './usage.ts';
 import { describeInstall, installHooks } from './install-hooks.ts';
 import { LoopError, planLoop, runLoop } from './loop.ts';
@@ -57,17 +57,26 @@ Commands:
                    from \`npx @ai-hero/sandcastle init\`), on a throwaway
                    clone of the repo, with ~/.claude/skills mounted
                    read-only. Only the branch's new commits come back to the
-                   repo, as a git bundle. Then the gate runs.
+                   repo, as a git bundle. Then the gate runs: polesar
+                   pushes polesar/<n> to origin, opens (or refreshes) its PR
+                   with a body that closes the ticket and holds the
+                   evidence, and waits for the PR's required checks, up to
+                   "gate": {"timeoutMinutes": 30} in polesar.json. A red
+                   gate names each failed check and the step that failed.
+                   Branch protection must require status checks, or the
+                   gate times out red.
                    Blocking findings go back to the implementer (1 review
                    retry, shared with reviews of later fixes). A red gate is rerun once with no agent; green
-                   with no code change is logged as a flaky gate. Still red,
+                   with no code change is logged as a flaky gate. The
+                   rerun re-triggers only the failed GitHub Actions jobs. Still red,
                    it goes back to the implementer with the failure summary
                    (2 CI retries), and only the new change is reviewed.
                    Non-blocking findings go in the PR body and the log.
                    Evidence over 60,000 characters is cut short in the PR
                    body and comments; the full file is saved under
                    POLESAR_HOME/evidence/.
-                   polesar merges only when the gate is green, no finding
+                   polesar merges, through GitHub so branch protection
+                   applies, only when the gate is green, no finding
                    blocks, every commit was reviewed and the evidence exists,
                    then closes the ticket with an evidence comment. A branch
                    that modifies or deletes a protected file (existing tests,
@@ -102,8 +111,9 @@ Commands:
                    budget (with rule and detail), paused (with until and
                    ticket) or failed (with ticket and detail).
                    Exit: 0 every ticket merged (or dry run), 1 a ticket was
-                   escalated, an agent run failed, or GitHub couldn't be
-                   read, 2 bad usage or config, 3 stopped early by the
+                   escalated, an agent run failed, GitHub couldn't be
+                   read, or the branch couldn't be pushed, its PR opened
+                   or merged, 2 bad usage or config, 3 stopped early by the
                    budget or paused by a rate limit.
   verdict <ticket> approved|rejected [--dry-run] [--json]
                    Record your verdict on polesar's latest escalation of a
@@ -254,12 +264,16 @@ export type Ports = {
   home: string;
 };
 
-/** Runs `action`, exiting 1 with the message when the tracker fails or the loop can't run. */
+/** Runs `action`, exiting 1 with the message when the tracker or gate fails or the loop can't run. */
 const orExitOnPortError = async <T>(action: () => Promise<T>) => {
   try {
     return await action();
   } catch (error) {
-    if (!(error instanceof TrackerError || error instanceof LoopError)) {
+    if (!(
+      error instanceof TrackerError ||
+      error instanceof GateError ||
+      error instanceof LoopError
+    )) {
       throw error;
     }
     process.stderr.write(`polesar: ${error.message}\n`);

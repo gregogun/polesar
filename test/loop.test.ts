@@ -763,17 +763,4 @@ describe('polesar loop', () => {
     const implement = result.calls.find((call) => call.method === 'implement');
     expect(implement?.args[0]).not.toHaveProperty('effort');
   });
-
-  it('says what to do when there is no gate yet, before touching any ticket', async () => {
-    const result = await runCli(
-      ['loop'],
-      trackerGraph([{ number: 1, title: 'Docs', labels: ['ready-for-agent'] }])
-    );
-
-    expect(result.exitCode).toBe(1);
-    expect(result.stdout).toBe('');
-    expect(result.stderr).toBe(
-      'polesar: polesar loop has no gate yet: the CI adapter is not built (gregogun/polesar#12). Run `polesar loop --dry-run` to see what it would do.\n'
-    );
-  });
 });
