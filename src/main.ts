@@ -54,8 +54,10 @@ Commands:
                    CLAUDE.md, GLOSSARY.md, docs/adr/); one that changes the
                    branch has its changes discarded and escalates. Both run
                    in one Docker sandbox per ticket via Sandcastle (its image
-                   from \`npx @ai-hero/sandcastle init\`), with
-                   ~/.claude/skills mounted read-only. Then the gate runs.
+                   from \`npx @ai-hero/sandcastle init\`), on a throwaway
+                   clone of the repo, with ~/.claude/skills mounted
+                   read-only. Only the branch's new commits come back to the
+                   repo, as a git bundle. Then the gate runs.
                    Blocking findings go back to the implementer (1 review
                    retry, shared with reviews of later fixes). A red gate is rerun once with no agent; green
                    with no code change is logged as a flaky gate. Still red,
@@ -153,8 +155,8 @@ Options:
 
 Environment:
   POLESAR_HOME     Where polesar keeps usage readings, the loop's weekly
-                   usage, paused runs, agent logs and full evidence files
-                   (default: ~/.polesar)
+                   usage, paused runs, agent logs, full evidence files and
+                   the sandboxes' clones (default: ~/.polesar)
   CLAUDE_CODE_OAUTH_TOKEN
                    The token polesar loop's agents run on, from \`claude
                    setup-token\`. It is the only secret that enters the
