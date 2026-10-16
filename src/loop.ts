@@ -357,10 +357,12 @@ const workTicket = async (
       }),
     });
     state.trail.push({ step: 'gate', result: checked });
+    if (checked.timedOut) return stop([`gate timed out: ${checked.summary}`]);
     if (!checked.green) {
       // A free rerun first: a flaky gate shouldn't cost tokens or a CI retry.
       const rerun = await gate.rerun({ ticket: number, branch });
       state.trail.push({ step: 'rerun', result: rerun });
+      if (rerun.timedOut) return stop([`gate timed out: ${rerun.summary}`]);
       if (!sameCommits(rerun.commits, checked.commits)) {
         return stop([
           `gate rerun ran on ${rerun.commits.join(', ') || 'no commits'}, not ${checked.commits.join(', ')}`,

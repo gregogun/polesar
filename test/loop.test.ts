@@ -405,6 +405,60 @@ describe('polesar loop', () => {
       expect(comment?.args[1]).toContain('- Reviewed commits: c1, c1.2\n');
     });
 
+    it('escalates straight away when the gate times out: a wait is no failure to rerun or send back', async () => {
+      const result = await runLoop({
+        tickets: [ticket],
+        gate: {
+          1: {
+            green: false,
+            timedOut: true,
+            summary: 'timed out after 30 min: still running: test',
+          },
+        },
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(
+        writes(result.calls).map(({ port, method }) => `${port}.${method}`)
+      ).toEqual([
+        'executor.implement',
+        'executor.review',
+        'gate.check',
+        'tracker.addLabel',
+        'tracker.removeLabel',
+        'tracker.comment',
+      ]);
+      const comment = result.calls.find(({ method }) => method === 'comment');
+      expect(comment?.args[1]).toContain(
+        '- gate timed out: timed out after 30 min: still running: test\n'
+      );
+    });
+
+    it('escalates when the free rerun times out, with no CI retry', async () => {
+      const result = await runLoop({
+        tickets: [ticket],
+        gate: {
+          1: [
+            { green: false, summary: 'lint failed' },
+            { green: false, timedOut: true, summary: 'timed out' },
+          ],
+        },
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(
+        writes(result.calls).map(({ port, method }) => `${port}.${method}`)
+      ).toEqual([
+        'executor.implement',
+        'executor.review',
+        'gate.check',
+        'gate.rerun',
+        'tracker.addLabel',
+        'tracker.removeLabel',
+        'tracker.comment',
+      ]);
+    });
+
     it('escalates with every CI summary in the trail once the gate is still red after two CI retries', async () => {
       const result = await runLoop({
         tickets: [ticket],
